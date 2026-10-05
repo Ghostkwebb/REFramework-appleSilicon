@@ -107,118 +107,25 @@ HRESULT DarwinHost::create_d3d12_dummy_device(
     return hr;
 }
 
-struct HeldRefcountProbe {
-    IUnknown* object{};
-    ULONG held_refcount{};
-    bool valid{};
-};
-
-static HeldRefcountProbe __declspec(noinline) hold_refcount_probe_seh(IUnknown* object) {
-    HeldRefcountProbe probe{};
-    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
-        return probe;
-    }
-
-    __try {
-        probe.object = object;
-        probe.held_refcount = object->AddRef();
-        probe.valid = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Invalid COM pointer, ignore
-    }
-    return probe;
-}
-
-static void __declspec(noinline) release_refcount_probe_seh(HeldRefcountProbe* probe) {
-    if (probe == nullptr || !probe->valid || probe->object == nullptr) {
-        return;
-    }
-
-    __try {
-        probe->object->Release();
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Invalid COM pointer, ignore
-    }
-
-    probe->valid = false;
-    probe->object = nullptr;
-    probe->held_refcount = 0;
-}
-
-static bool __declspec(noinline) matches_refcount_probe_seh(IUnknown* candidate, const HeldRefcountProbe* probe) {
-    if (probe == nullptr || !probe->valid || candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
-        return false;
-    }
-
-    bool match = false;
-    __try {
-        const auto addref_result = candidate->AddRef();
-        const auto release_result = candidate->Release();
-        match = (addref_result == probe->held_refcount + 1 && release_result == probe->held_refcount);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        // Invalid COM pointer, ignore
-    }
-    return match;
-}
-
 uint32_t DarwinHost::find_command_queue_offset(void* swapchain, IUnknown* command_queue) {
-    if (swapchain == nullptr || command_queue == nullptr) {
+    if (swapchain == nullptr) {
         return 0;
     }
 
-    // 1. Check verified Wine / Apple D3DMetal offset (0x4C8) first.
     // In CrossOver / Apple D3DMetal, the swapchain struct consistently places
     // the command queue at 0x4C8 across D3DMetal versions (upstream PR #1589 & #1847).
     constexpr uint32_t WINE_D3DMETAL_CQ_OFFSET = 0x4C8;
     const auto d3dmetal_base = (uintptr_t)swapchain + WINE_D3DMETAL_CQ_OFFSET;
     if (!IsBadReadPtr((void*)d3dmetal_base, sizeof(void*))) {
-        auto candidate = *(ID3D12CommandQueue**)d3dmetal_base;
-        if (candidate != nullptr && 
-            !IsBadReadPtr((void*)candidate, sizeof(void*)) && 
-            !IsBadReadPtr(*(void**)candidate, sizeof(void*))) 
-        {
+        auto candidate = *(void**)d3dmetal_base;
+        if (candidate != nullptr && !IsBadReadPtr(candidate, sizeof(void*))) {
             spdlog::info("DarwinHost: Using verified D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
             return WINE_D3DMETAL_CQ_OFFSET;
         }
     }
 
-    // 2. Dynamic refcount probe fallback for non-standard or newer Wine/DXVK layouts
-    auto probe = hold_refcount_probe_seh(command_queue);
-    uint32_t found_offset = 0;
-
-    constexpr auto COMMAND_QUEUE_SCAN_BYTES = 512 * sizeof(void*);
-
-    if (probe.valid) {
-        // Must start at sizeof(void*) to avoid probing offset 0 (swapchain vtable pointer!)
-        for (auto i = (uint32_t)sizeof(void*); i < COMMAND_QUEUE_SCAN_BYTES; i += sizeof(void*)) {
-            const auto base = (uintptr_t)swapchain + i;
-            if (IsBadReadPtr((void*)base, sizeof(void*))) {
-                break;
-            }
-
-            auto candidate = *(IUnknown**)base;
-            if (candidate == nullptr || candidate == (IUnknown*)swapchain) {
-                continue;
-            }
-            if (IsBadReadPtr(candidate, sizeof(void*)) || IsBadReadPtr(*(void**)candidate, sizeof(void*))) {
-                continue;
-            }
-
-            if (matches_refcount_probe_seh(candidate, &probe)) {
-                found_offset = i;
-                break;
-            }
-        }
-        release_refcount_probe_seh(&probe);
-    }
-
-    if (found_offset >= sizeof(void*) && (found_offset % sizeof(void*) == 0)) {
-        spdlog::info("DarwinHost: Found command queue offset via refcount probe: 0x{:x}", found_offset);
-        return found_offset;
-    }
-
-    // Fallback: Default to known D3DMetal offset
-    spdlog::warn("DarwinHost: Fallback to default D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
+    // Default to the known D3DMetal offset (CrossOver / GPTK)
+    spdlog::warn("DarwinHost: Defaulting to standard D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
     return WINE_D3DMETAL_CQ_OFFSET;
 }
 
@@ -226,16 +133,7 @@ bool DarwinHost::matches_command_queue(IUnknown* candidate, IUnknown* command_qu
     if (candidate == nullptr || command_queue == nullptr) {
         return false;
     }
-    if (candidate == command_queue) {
-        return true;
-    }
-    auto probe = hold_refcount_probe_seh(command_queue);
-    if (!probe.valid) {
-        return false;
-    }
-    const bool match = matches_refcount_probe_seh(candidate, &probe);
-    release_refcount_probe_seh(&probe);
-    return match;
+    return candidate == command_queue;
 }
 
 intptr_t DarwinHost::calculate_command_queue_delta(void* swapchain, uint32_t offset, IUnknown* command_queue) {

@@ -437,27 +437,26 @@ bool D3D12Hook::hook() {
     s_command_queue_offset = 0;
     s_wine_cq_delta = 0;
 
-    // Find the command queue offset in the swapchain
-    for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
-        const auto base = (uintptr_t)swap_chain1 + i;
-
-        // reached the end
-        if (IsBadReadPtr((void*)base, sizeof(void*))) {
-            break;
-        }
-
-        auto data = *(ID3D12CommandQueue**)base;
-
-        if (data == command_queue) {
-            s_command_queue_offset = i;
-            spdlog::info("Found command queue offset: {:x}", i);
-            break;
-        }
-    }
-
-    // On macOS / D3DMetal, swapchain wraps COM pointers. Probing by refcount finds the offset.
-    if (s_command_queue_offset == 0 && utility::DarwinHost::is_darwin()) {
+    if (utility::DarwinHost::is_darwin()) {
         s_command_queue_offset = utility::DarwinHost::find_command_queue_offset(swap_chain1, command_queue);
+    } else {
+        // Find the command queue offset in the swapchain
+        for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
+            const auto base = (uintptr_t)swap_chain1 + i;
+
+            // reached the end
+            if (IsBadReadPtr((void*)base, sizeof(void*))) {
+                break;
+            }
+
+            auto data = *(ID3D12CommandQueue**)base;
+
+            if (data == command_queue) {
+                s_command_queue_offset = i;
+                spdlog::info("Found command queue offset: {:x}", i);
+                break;
+            }
+        }
     }
 
     auto target_swapchain = swap_chain;
@@ -490,8 +489,7 @@ bool D3D12Hook::hook() {
 
                 auto data = *(ID3D12CommandQueue**)pre_data;
 
-                const auto matches_queue = (data == command_queue) ||
-                    (utility::DarwinHost::is_darwin() && utility::DarwinHost::matches_command_queue((IUnknown*)data, (IUnknown*)command_queue));
+                const auto matches_queue = (data == command_queue);
 
                 if (matches_queue) {
                     // If we hook Streamline's Swapchain, the menu fails to render correctly/flickers
