@@ -269,9 +269,11 @@ bool D3D12Hook::hook() {
         return false;
     }
 
+    auto create_dxgi_factory2 = (decltype(CreateDXGIFactory2)*)GetProcAddress(dxgi_module, "CreateDXGIFactory2");
+    auto create_dxgi_factory1 = (decltype(CreateDXGIFactory1)*)GetProcAddress(dxgi_module, "CreateDXGIFactory1");
     auto create_dxgi_factory = (decltype(CreateDXGIFactory)*)GetProcAddress(dxgi_module, "CreateDXGIFactory");
 
-    if (create_dxgi_factory == nullptr) {
+    if (create_dxgi_factory == nullptr && create_dxgi_factory1 == nullptr && create_dxgi_factory2 == nullptr) {
         spdlog::error("Failed to get CreateDXGIFactory export");
         return false;
     }
@@ -279,7 +281,17 @@ bool D3D12Hook::hook() {
     spdlog::info("Creating dummy DXGI factory");
 
     IDXGIFactory4* factory{ nullptr };
-    if (FAILED(create_dxgi_factory(IID_PPV_ARGS(&factory)))) {
+    HRESULT factory_hr = E_FAIL;
+    if (create_dxgi_factory2 != nullptr) {
+        factory_hr = create_dxgi_factory2(0, IID_PPV_ARGS(&factory));
+    }
+    if (FAILED(factory_hr) && create_dxgi_factory1 != nullptr) {
+        factory_hr = create_dxgi_factory1(IID_PPV_ARGS(&factory));
+    }
+    if (FAILED(factory_hr) && create_dxgi_factory != nullptr) {
+        factory_hr = create_dxgi_factory(IID_PPV_ARGS(&factory));
+    }
+    if (FAILED(factory_hr) || factory == nullptr) {
         spdlog::error("Failed to create D3D12 Dummy DXGI Factory");
         return false;
     }
@@ -564,9 +576,20 @@ void D3D12Hook::hook_impl() {
     auto& present_fn = s_swapchain_vtable[8]; // Present
     m_present_hook = std::make_unique<PointerHook>(&present_fn, &D3D12Hook::present);
 
-    if (s_create_swapchain_hook == nullptr) {
-        auto& create_swapchain_fn = s_factory_vtable[15]; // CreateSwapChainForHwnd
-        s_create_swapchain_hook = std::make_unique<PointerHook>(&create_swapchain_fn, &D3D12Hook::create_swapchain);
+    if (s_create_swapchain_hook == nullptr && s_factory_vtable != nullptr) {
+        try {
+            if (!IsBadReadPtr(&s_factory_vtable[15], sizeof(void*)) && 
+                s_factory_vtable[15] != nullptr && 
+                !IsBadReadPtr(s_factory_vtable[15], sizeof(void*))) 
+            {
+                auto& create_swapchain_fn = s_factory_vtable[15]; // CreateSwapChainForHwnd
+                s_create_swapchain_hook = std::make_unique<PointerHook>(&create_swapchain_fn, &D3D12Hook::create_swapchain);
+            } else {
+                spdlog::warn("D3D12Hook: s_factory_vtable[15] is not readable, skipping CreateSwapChainForHwnd hook");
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("D3D12Hook: Failed to hook CreateSwapChainForHwnd: {}", e.what());
+        }
     }
 
     m_hooked = true;
