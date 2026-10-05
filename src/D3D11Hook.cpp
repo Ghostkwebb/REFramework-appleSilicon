@@ -2,6 +2,7 @@
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
+#include <utility/DarwinHost.hpp>
 
 #include <openvr.h>
 
@@ -44,36 +45,51 @@ bool D3D11Hook::hook() {
     swap_chain_desc.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
     swap_chain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-    const auto original_bytes = utility::get_original_bytes(&D3D11CreateDeviceAndSwapChain);
-
-    // Temporarily unhook D3D11CreateDeviceAndSwapChain
-    // it allows compatibility with ReShade and other overlays that hook it
-    // this is just a dummy device anyways, we don't want the other overlays to be able to use it
-    if (original_bytes) {
-        spdlog::info("D3D11CreateDeviceAndSwapChain appears to be hooked, temporarily unhooking");
-
-        std::vector<uint8_t> hooked_bytes(original_bytes->size());
-        memcpy(hooked_bytes.data(), &D3D11CreateDeviceAndSwapChain, original_bytes->size());
-
-        ProtectionOverride protection_override{ &D3D11CreateDeviceAndSwapChain, original_bytes->size(), PAGE_EXECUTE_READWRITE };
-        memcpy(&D3D11CreateDeviceAndSwapChain, original_bytes->data(), original_bytes->size());
-        
-        if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, &feature_level, 1, D3D11_SDK_VERSION,
-                &swap_chain_desc, &swap_chain, &device, nullptr, &context))) 
-        {
-            spdlog::error("Failed to create D3D11 device");
-            memcpy(&D3D11CreateDeviceAndSwapChain, hooked_bytes.data(), hooked_bytes.size());
+    if (utility::DarwinHost::is_wine()) {
+        spdlog::info("Wine/CrossOver detected (DXMT/DXVK), creating D3D11 dummy device directly");
+        auto hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, &feature_level, 1, D3D11_SDK_VERSION,
+                &swap_chain_desc, &swap_chain, &device, nullptr, &context);
+        if (FAILED(hr)) {
+            spdlog::warn("Wine: D3D_DRIVER_TYPE_NULL failed (0x{:X}), falling back to D3D_DRIVER_TYPE_HARDWARE for DXMT/DXVK", (uint32_t)hr);
+            hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, &feature_level, 1, D3D11_SDK_VERSION,
+                &swap_chain_desc, &swap_chain, &device, nullptr, &context);
+        }
+        if (FAILED(hr)) {
+            spdlog::error("Failed to create D3D11 device under Wine: 0x{:X}", (uint32_t)hr);
             return false;
         }
-        
-        spdlog::info("Restoring hooked bytes for D3D11CreateDeviceAndSwapChain");
-        memcpy(&D3D11CreateDeviceAndSwapChain, hooked_bytes.data(), hooked_bytes.size());
     } else {
-        if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, &feature_level, 1, D3D11_SDK_VERSION,
-                &swap_chain_desc, &swap_chain, &device, nullptr, &context))) 
-        {
-            spdlog::error("Failed to create D3D11 device");
-            return false;
+        const auto original_bytes = utility::get_original_bytes(&D3D11CreateDeviceAndSwapChain);
+
+        // Temporarily unhook D3D11CreateDeviceAndSwapChain
+        // it allows compatibility with ReShade and other overlays that hook it
+        // this is just a dummy device anyways, we don't want the other overlays to be able to use it
+        if (original_bytes) {
+            spdlog::info("D3D11CreateDeviceAndSwapChain appears to be hooked, temporarily unhooking");
+
+            std::vector<uint8_t> hooked_bytes(original_bytes->size());
+            memcpy(hooked_bytes.data(), &D3D11CreateDeviceAndSwapChain, original_bytes->size());
+
+            ProtectionOverride protection_override{ &D3D11CreateDeviceAndSwapChain, original_bytes->size(), PAGE_EXECUTE_READWRITE };
+            memcpy(&D3D11CreateDeviceAndSwapChain, original_bytes->data(), original_bytes->size());
+            
+            if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, &feature_level, 1, D3D11_SDK_VERSION,
+                    &swap_chain_desc, &swap_chain, &device, nullptr, &context))) 
+            {
+                spdlog::error("Failed to create D3D11 device");
+                memcpy(&D3D11CreateDeviceAndSwapChain, hooked_bytes.data(), hooked_bytes.size());
+                return false;
+            }
+            
+            spdlog::info("Restoring hooked bytes for D3D11CreateDeviceAndSwapChain");
+            memcpy(&D3D11CreateDeviceAndSwapChain, hooked_bytes.data(), hooked_bytes.size());
+        } else {
+            if (FAILED(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_NULL, nullptr, 0, &feature_level, 1, D3D11_SDK_VERSION,
+                    &swap_chain_desc, &swap_chain, &device, nullptr, &context))) 
+            {
+                spdlog::error("Failed to create D3D11 device");
+                return false;
+            }
         }
     }
 

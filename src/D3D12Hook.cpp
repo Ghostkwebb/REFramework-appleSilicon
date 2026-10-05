@@ -11,6 +11,7 @@
 #include <utility/RTTI.hpp>
 #include <utility/Scan.hpp>
 #include <utility/ScopeGuard.hpp>
+#include <utility/DarwinHost.hpp>
 
 #include "REFramework.hpp"
 
@@ -85,6 +86,21 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
     }
 
     const auto result = create_swap_chain_fn(factory, device, hwnd, desc, p_fullscreen_desc, p_restrict_to_output, swap_chain);
+
+    // Dynamic recovery on Darwin/Wine if offset scan wasn't resolved during dummy device creation
+    if (result == S_OK && s_command_queue_offset == 0 && utility::DarwinHost::is_darwin() && swap_chain != nullptr && *swap_chain != nullptr) {
+        spdlog::info("D3D12Hook: Dynamically initializing offsets from real swapchain on Darwin");
+        s_factory_vtable = *(void***)factory;
+        s_swapchain_vtable = *(void***)*swap_chain;
+
+        s_command_queue_offset = utility::DarwinHost::find_command_queue_offset(*swap_chain, device);
+        if (s_command_queue_offset != 0) {
+            s_wine_cq_delta = utility::DarwinHost::calculate_command_queue_delta(*swap_chain, s_command_queue_offset, device);
+            if (g_d3d12_hook != nullptr) {
+                g_d3d12_hook->hook_impl();
+            }
+        }
+    }
 
     // rather than waiting on the hook monitor to notice the hook isn't working
     if (!hook_was_nullptr) {
@@ -206,33 +222,41 @@ bool D3D12Hook::hook() {
 
     spdlog::info("Creating dummy device");
 
-    // Get the original on-disk bytes of the D3D12CreateDevice export
-    const auto original_bytes = utility::get_original_bytes(d3d12_create_device);
-
-    // Temporarily unhook D3D12CreateDevice
-    // it allows compatibility with ReShade and other overlays that hook it
-    // this is just a dummy device anyways, we don't want the other overlays to be able to use it
-    if (original_bytes) {
-        spdlog::info("D3D12CreateDevice appears to be hooked, temporarily unhooking");
-
-        std::vector<uint8_t> hooked_bytes(original_bytes->size());
-        memcpy(hooked_bytes.data(), d3d12_create_device, original_bytes->size());
-
-        ProtectionOverride protection_override{ d3d12_create_device, original_bytes->size(), PAGE_EXECUTE_READWRITE };
-        memcpy(d3d12_create_device, original_bytes->data(), original_bytes->size());
-        
-        if (FAILED(d3d12_create_device(nullptr, feature_level, IID_PPV_ARGS(&device)))) {
-            spdlog::error("Failed to create D3D12 Dummy device");
-            memcpy(d3d12_create_device, hooked_bytes.data(), hooked_bytes.size());
+    if (utility::DarwinHost::is_darwin()) {
+        spdlog::info("macOS / D3DMetal environment detected, creating dummy device with enumerated adapter");
+        if (FAILED(utility::DarwinHost::create_d3d12_dummy_device(d3d12_create_device, feature_level, &device))) {
+            spdlog::error("Failed to create D3D12 dummy device under D3DMetal");
             return false;
         }
+    } else {
+        // Get the original on-disk bytes of the D3D12CreateDevice export
+        const auto original_bytes = utility::get_original_bytes(d3d12_create_device);
 
-        spdlog::info("Restoring hooked bytes for D3D12CreateDevice");
-        memcpy(d3d12_create_device, hooked_bytes.data(), hooked_bytes.size());
-    } else { // D3D12CreateDevice is not hooked
-        if (FAILED(d3d12_create_device(nullptr, feature_level, IID_PPV_ARGS(&device)))) {
-            spdlog::error("Failed to create D3D12 Dummy device");
-            return false;
+        // Temporarily unhook D3D12CreateDevice
+        // it allows compatibility with ReShade and other overlays that hook it
+        // this is just a dummy device anyways, we don't want the other overlays to be able to use it
+        if (original_bytes) {
+            spdlog::info("D3D12CreateDevice appears to be hooked, temporarily unhooking");
+
+            std::vector<uint8_t> hooked_bytes(original_bytes->size());
+            memcpy(hooked_bytes.data(), d3d12_create_device, original_bytes->size());
+
+            ProtectionOverride protection_override{ d3d12_create_device, original_bytes->size(), PAGE_EXECUTE_READWRITE };
+            memcpy(d3d12_create_device, original_bytes->data(), original_bytes->size());
+            
+            if (FAILED(d3d12_create_device(nullptr, feature_level, IID_PPV_ARGS(&device)))) {
+                spdlog::error("Failed to create D3D12 Dummy device");
+                memcpy(d3d12_create_device, hooked_bytes.data(), hooked_bytes.size());
+                return false;
+            }
+
+            spdlog::info("Restoring hooked bytes for D3D12CreateDevice");
+            memcpy(d3d12_create_device, hooked_bytes.data(), hooked_bytes.size());
+        } else { // D3D12CreateDevice is not hooked
+            if (FAILED(d3d12_create_device(nullptr, feature_level, IID_PPV_ARGS(&device)))) {
+                spdlog::error("Failed to create D3D12 Dummy device");
+                return false;
+            }
         }
     }
 
@@ -399,6 +423,7 @@ bool D3D12Hook::hook() {
     spdlog::info("Finding command queue offset");
 
     s_command_queue_offset = 0;
+    s_wine_cq_delta = 0;
 
     // Find the command queue offset in the swapchain
     for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
@@ -416,6 +441,11 @@ bool D3D12Hook::hook() {
             spdlog::info("Found command queue offset: {:x}", i);
             break;
         }
+    }
+
+    // On macOS / D3DMetal, swapchain wraps COM pointers. Probing by refcount finds the offset.
+    if (s_command_queue_offset == 0 && utility::DarwinHost::is_darwin()) {
+        s_command_queue_offset = utility::DarwinHost::find_command_queue_offset(swap_chain1, command_queue);
     }
 
     auto target_swapchain = swap_chain;
@@ -448,7 +478,10 @@ bool D3D12Hook::hook() {
 
                 auto data = *(ID3D12CommandQueue**)pre_data;
 
-                if (data == command_queue) {
+                const auto matches_queue = (data == command_queue) ||
+                    (utility::DarwinHost::is_darwin() && utility::DarwinHost::matches_command_queue((IUnknown*)data, (IUnknown*)command_queue));
+
+                if (matches_queue) {
                     // If we hook Streamline's Swapchain, the menu fails to render correctly/flickers
                     // So we switch out the swapchain with the internal one owned by Streamline
                     // Side note: Even though we are scanning for Proton here,
@@ -480,6 +513,11 @@ bool D3D12Hook::hook() {
     if (s_command_queue_offset == 0) {
         spdlog::error("Failed to find command queue offset");
         return false;
+    }
+
+    if (utility::DarwinHost::is_darwin() && s_command_queue_offset != 0) {
+        const auto scan_object = m_using_proton_swapchain ? *(uintptr_t*)((uintptr_t)swap_chain1 + s_proton_swapchain_offset) : (uintptr_t)swap_chain1;
+        s_wine_cq_delta = utility::DarwinHost::calculate_command_queue_delta((void*)scan_object, s_command_queue_offset, command_queue);
     }
 
     //utility::ThreadSuspender suspender{};
@@ -623,6 +661,10 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         d3d12->m_command_queue = *(ID3D12CommandQueue**)(real_swapchain + d3d12->s_command_queue_offset);
     } else {
         d3d12->m_command_queue = *(ID3D12CommandQueue**)((uintptr_t)swap_chain + d3d12->s_command_queue_offset);
+    }
+
+    if (s_wine_cq_delta != 0) {
+        d3d12->m_command_queue = (ID3D12CommandQueue*)((uintptr_t)d3d12->m_command_queue + s_wine_cq_delta);
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {

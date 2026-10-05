@@ -115,6 +115,7 @@ protected:
 
     static inline uint32_t s_command_queue_offset{};
     static inline uint32_t s_proton_swapchain_offset{};
+    static inline intptr_t s_wine_cq_delta{};
 
     bool m_using_proton_swapchain{ false };
     bool m_using_frame_generation_swapchain{ false };

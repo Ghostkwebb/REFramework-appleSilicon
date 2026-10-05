@@ -14,6 +14,7 @@
 #include "utility/Module.hpp"
 #include "utility/Scan.hpp"
 #include "utility/Emulation.hpp"
+#include "utility/DarwinHost.hpp"
 #include <bdshemu.h>
 
 // Windows.h arrives via the utility headers above; TlHelp32 requires it to come first.
@@ -2324,6 +2325,14 @@ void IntegrityCheckBypass::setup_pristine_syscall() {
 
     s_og_protect_virtual_memory = nt_protect_virtual_memory;
 
+    // Wine: ntdll NtProtectVirtualMemory is a full C implementation, not a raw syscall stub.
+    // Copying bytes to a heap allocation produces broken RIP-relative code.
+    if (utility::DarwinHost::is_wine()) {
+        spdlog::info("[IntegrityCheckBypass]: Wine/CrossOver detected, skipping pristine NtProtectVirtualMemory clone");
+        s_pristine_protect_virtual_memory = nt_protect_virtual_memory;
+        return;
+    }
+
     // Mark the original VirtualProtect READ_WRITE_EXECUTE so if anything tries to restore the old protection, it will revert to this
     // incase trying to modify the protection after it is hooked causes a crash
     DWORD old_nt_protect_virtual_memory_protect{};
@@ -2359,6 +2368,13 @@ void IntegrityCheckBypass::fix_virtual_protect() try {
 }
 
 BOOL WINAPI IntegrityCheckBypass::virtual_protect_impl(LPVOID lpAddress, SIZE_T dwSize, DWORD flNewProtect, PDWORD lpflOldProtect) {
+    if (utility::DarwinHost::is_wine()) {
+        if (s_virtual_protect_hook) {
+            return s_virtual_protect_hook->get_original<decltype(virtual_protect_hook)>()(lpAddress, dwSize, flNewProtect, lpflOldProtect);
+        }
+        return VirtualProtect(lpAddress, dwSize, flNewProtect, lpflOldProtect);
+    }
+
     static const auto this_process = GetCurrentProcess();
 
     LPVOID address_to_protect = lpAddress;
@@ -2395,6 +2411,10 @@ BOOL WINAPI IntegrityCheckBypass::virtual_protect_hook(LPVOID lpAddress, SIZE_T 
     if (once) {
         spdlog::info("[IntegrityCheckBypass]: VirtualProtect called");
         once = false;
+    }
+
+    if (utility::DarwinHost::is_wine()) {
+        return virtual_protect_impl(lpAddress, dwSize, flNewProtect, lpflOldProtect);
     }
 
     try {

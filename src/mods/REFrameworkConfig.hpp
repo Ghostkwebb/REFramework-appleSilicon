@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Mod.hpp"
+#include <utility/DarwinHost.hpp>
 
 class REFrameworkConfig : public Mod {
 public:
@@ -45,7 +46,7 @@ public:
     }
 
 private:
-    ModKey::Ptr m_menu_key{ ModKey::create(generate_name("MenuKey_V2"), VK_INSERT) };
+    ModKey::Ptr m_menu_key{ ModKey::create(generate_name("MenuKey_V2"), (int)utility::DarwinHost::get_default_menu_key()) };
     ModToggle::Ptr m_menu_open{ ModToggle::create(generate_name("MenuOpen"), true) };
     ModToggle::Ptr m_remember_menu_state{ ModToggle::create(generate_name("RememberMenuState"), false) };
 #if defined(RE8) && !defined(REFRAMEWORK_UNIVERSAL)

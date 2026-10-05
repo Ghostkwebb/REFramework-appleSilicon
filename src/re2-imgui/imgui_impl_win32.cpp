@@ -79,6 +79,7 @@
 #include "imgui.h"
 #ifndef IMGUI_DISABLE
 #include "imgui_impl_win32.h"
+#include <utility/DarwinHost.hpp>
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -296,10 +297,14 @@ static void ImGui_ImplWin32_ProcessKeyEventsWorkarounds(ImGuiIO& io)
 
 static void ImGui_ImplWin32_UpdateKeyModifiers(ImGuiIO& io)
 {
-    io.AddKeyEvent(ImGuiMod_Ctrl, IsVkDown(VK_CONTROL));
+    const bool is_mac = utility::DarwinHost::is_darwin();
+    const bool is_win_down = IsVkDown(VK_LWIN) || IsVkDown(VK_RWIN);
+    const bool is_ctrl_down = IsVkDown(VK_CONTROL) || (is_mac && is_win_down);
+
+    io.AddKeyEvent(ImGuiMod_Ctrl, is_ctrl_down);
     io.AddKeyEvent(ImGuiMod_Shift, IsVkDown(VK_SHIFT));
     io.AddKeyEvent(ImGuiMod_Alt, IsVkDown(VK_MENU));
-    io.AddKeyEvent(ImGuiMod_Super, IsVkDown(VK_LWIN) || IsVkDown(VK_RWIN));
+    io.AddKeyEvent(ImGuiMod_Super, is_win_down);
 }
 
 static void ImGui_ImplWin32_UpdateMouseData(ImGuiIO& io)

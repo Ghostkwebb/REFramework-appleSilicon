@@ -395,6 +395,8 @@ endif()
 # Target: utility
 set(utility_SOURCES
 	cmake.toml
+	"shared/utility/DarwinHost.cpp"
+	"shared/utility/DarwinHost.hpp"
 	"shared/utility/Exceptions.cpp"
 	"shared/utility/Exceptions.hpp"
 	"shared/utility/FunctionHook.cpp"
