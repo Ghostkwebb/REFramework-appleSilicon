@@ -1,5 +1,11 @@
 name: Publish Release Artifact
-on: [workflow_dispatch]
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID to publish artifact from'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -13,11 +19,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: REFramework
-          run-id: 37352025664
+          run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete v-darwin-latest -y --repo Ghostkwebb/REFramework-appleSilicon || true
-          gh release create v-darwin-latest dinput8.dll --repo Ghostkwebb/REFramework-appleSilicon --title "Darwin Build Latest" --notes "Built from commit 220e21ad"
+          gh release delete v1.99.0-darwin -y --repo Ghostkwebb/REFramework-appleSilicon || true
+          gh release create v1.99.0-darwin dinput8.dll --repo Ghostkwebb/REFramework-appleSilicon --title "Darwin Build Latest" --notes "Latest automated build"
