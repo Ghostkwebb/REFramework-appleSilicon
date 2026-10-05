@@ -52,14 +52,10 @@ static HRESULT __declspec(noinline) d3d12_create_device_safe_seh(
     ID3D12Device** device_out) 
 {
     HRESULT hr = E_FAIL;
-    unsigned long exception_code = 0;
     __try {
         hr = fn(adapter, feature_level, IID_PPV_ARGS(device_out));
-    } __except (exception_code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
         hr = E_FAIL;
-    }
-    if (exception_code != 0) {
-        spdlog::error("DarwinHost: Exception during D3D12CreateDevice call (code {:x})", exception_code);
     }
     return hr;
 }
@@ -103,6 +99,10 @@ HRESULT DarwinHost::create_d3d12_dummy_device(
     spdlog::info("DarwinHost: Calling D3D12CreateDevice with enumerated adapter {:x}", (uintptr_t)adapter);
     const auto hr = d3d12_create_device_safe_seh(create_fn, adapter, feature_level, out_device);
     adapter->Release();
+
+    if (FAILED(hr)) {
+        spdlog::error("DarwinHost: D3D12CreateDevice failed: 0x{:X}", (uint32_t)hr);
+    }
 
     return hr;
 }
