@@ -166,19 +166,44 @@ uint32_t DarwinHost::find_command_queue_offset(void* swapchain, IUnknown* comman
         return 0;
     }
 
+    // 1. Check verified Wine / Apple D3DMetal offset (0x4C8) first.
+    // In CrossOver / Apple D3DMetal, the swapchain struct consistently places
+    // the command queue at 0x4C8 across D3DMetal versions (upstream PR #1589 & #1847).
+    constexpr uint32_t WINE_D3DMETAL_CQ_OFFSET = 0x4C8;
+    const auto d3dmetal_base = (uintptr_t)swapchain + WINE_D3DMETAL_CQ_OFFSET;
+    if (!IsBadReadPtr((void*)d3dmetal_base, sizeof(void*))) {
+        auto candidate = *(ID3D12CommandQueue**)d3dmetal_base;
+        if (candidate != nullptr && 
+            !IsBadReadPtr((void*)candidate, sizeof(void*)) && 
+            !IsBadReadPtr(*(void**)candidate, sizeof(void*))) 
+        {
+            spdlog::info("DarwinHost: Using verified D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
+            return WINE_D3DMETAL_CQ_OFFSET;
+        }
+    }
+
+    // 2. Dynamic refcount probe fallback for non-standard or newer Wine/DXVK layouts
     auto probe = hold_refcount_probe_seh(command_queue);
     uint32_t found_offset = 0;
 
     constexpr auto COMMAND_QUEUE_SCAN_BYTES = 512 * sizeof(void*);
 
     if (probe.valid) {
-        for (auto i = 0u; i < COMMAND_QUEUE_SCAN_BYTES; i += sizeof(void*)) {
+        // Must start at sizeof(void*) to avoid probing offset 0 (swapchain vtable pointer!)
+        for (auto i = (uint32_t)sizeof(void*); i < COMMAND_QUEUE_SCAN_BYTES; i += sizeof(void*)) {
             const auto base = (uintptr_t)swapchain + i;
             if (IsBadReadPtr((void*)base, sizeof(void*))) {
                 break;
             }
 
             auto candidate = *(IUnknown**)base;
+            if (candidate == nullptr || candidate == (IUnknown*)swapchain) {
+                continue;
+            }
+            if (IsBadReadPtr(candidate, sizeof(void*)) || IsBadReadPtr(*(void**)candidate, sizeof(void*))) {
+                continue;
+            }
+
             if (matches_refcount_probe_seh(candidate, &probe)) {
                 found_offset = i;
                 break;
@@ -187,23 +212,14 @@ uint32_t DarwinHost::find_command_queue_offset(void* swapchain, IUnknown* comman
         release_refcount_probe_seh(&probe);
     }
 
-    if (found_offset != 0) {
+    if (found_offset >= sizeof(void*) && (found_offset % sizeof(void*) == 0)) {
         spdlog::info("DarwinHost: Found command queue offset via refcount probe: 0x{:x}", found_offset);
         return found_offset;
     }
 
-    // Fallback for D3DMetal reported in community PR #1589 & #1847
-    constexpr uint32_t WINE_D3DMETAL_CQ_OFFSET = 0x4C8;
-    const auto base = (uintptr_t)swapchain + WINE_D3DMETAL_CQ_OFFSET;
-    if (!IsBadReadPtr((void*)base, sizeof(void*))) {
-        auto candidate = *(ID3D12CommandQueue**)base;
-        if (candidate != nullptr && !IsBadReadPtr((void*)candidate, sizeof(void*))) {
-            spdlog::warn("DarwinHost: Using hardcoded command queue offset 0x{:x} (D3DMetal fallback)", WINE_D3DMETAL_CQ_OFFSET);
-            return WINE_D3DMETAL_CQ_OFFSET;
-        }
-    }
-
-    return 0;
+    // Fallback: Default to known D3DMetal offset
+    spdlog::warn("DarwinHost: Fallback to default D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
+    return WINE_D3DMETAL_CQ_OFFSET;
 }
 
 bool DarwinHost::matches_command_queue(IUnknown* candidate, IUnknown* command_queue) {
@@ -223,11 +239,15 @@ bool DarwinHost::matches_command_queue(IUnknown* candidate, IUnknown* command_qu
 }
 
 intptr_t DarwinHost::calculate_command_queue_delta(void* swapchain, uint32_t offset, IUnknown* command_queue) {
-    if (swapchain == nullptr || offset == 0 || command_queue == nullptr) {
+    if (swapchain == nullptr || offset < sizeof(void*) || (offset % sizeof(void*) != 0) || command_queue == nullptr) {
         return 0;
     }
-    const auto raw = *(uintptr_t*)((uintptr_t)swapchain + offset);
-    if (raw == 0) {
+    const auto raw_ptr_addr = (uintptr_t)swapchain + offset;
+    if (IsBadReadPtr((void*)raw_ptr_addr, sizeof(void*))) {
+        return 0;
+    }
+    const auto raw = *(uintptr_t*)raw_ptr_addr;
+    if (raw == 0 || IsBadReadPtr((void*)raw, sizeof(void*))) {
         return 0;
     }
     const auto delta = (intptr_t)((uintptr_t)command_queue - raw);

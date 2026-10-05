@@ -656,15 +656,31 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         d3d12->m_device = temp_device.Get();
     }
 
-    if (d3d12->m_using_proton_swapchain) {
-        const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->s_proton_swapchain_offset);
-        d3d12->m_command_queue = *(ID3D12CommandQueue**)(real_swapchain + d3d12->s_command_queue_offset);
-    } else {
-        d3d12->m_command_queue = *(ID3D12CommandQueue**)((uintptr_t)swap_chain + d3d12->s_command_queue_offset);
-    }
+    if (d3d12->s_command_queue_offset >= sizeof(void*) && (d3d12->s_command_queue_offset % sizeof(void*) == 0)) {
+        if (d3d12->m_using_proton_swapchain) {
+            const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->s_proton_swapchain_offset);
+            if (real_swapchain != 0 && !IsBadReadPtr((void*)(real_swapchain + d3d12->s_command_queue_offset), sizeof(void*))) {
+                d3d12->m_command_queue = *(ID3D12CommandQueue**)(real_swapchain + d3d12->s_command_queue_offset);
+            }
+        } else {
+            const auto cq_addr = (uintptr_t)swap_chain + d3d12->s_command_queue_offset;
+            if (!IsBadReadPtr((void*)cq_addr, sizeof(void*))) {
+                d3d12->m_command_queue = *(ID3D12CommandQueue**)cq_addr;
+            }
+        }
 
-    if (s_wine_cq_delta != 0) {
-        d3d12->m_command_queue = (ID3D12CommandQueue*)((uintptr_t)d3d12->m_command_queue + s_wine_cq_delta);
+        if (s_wine_cq_delta != 0 && d3d12->m_command_queue != nullptr) {
+            d3d12->m_command_queue = (ID3D12CommandQueue*)((uintptr_t)d3d12->m_command_queue + s_wine_cq_delta);
+        }
+
+        if (d3d12->m_command_queue != nullptr && 
+            (IsBadReadPtr(d3d12->m_command_queue, sizeof(void*)) || IsBadReadPtr(*(void**)d3d12->m_command_queue, sizeof(void*)))) 
+        {
+            spdlog::error("D3D12Hook: Resolved invalid m_command_queue pointer {:x}", (uintptr_t)d3d12->m_command_queue);
+            d3d12->m_command_queue = nullptr;
+        }
+    } else {
+        d3d12->m_command_queue = nullptr;
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {
