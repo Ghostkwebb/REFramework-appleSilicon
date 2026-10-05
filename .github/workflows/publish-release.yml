@@ -1,0 +1,23 @@
+name: Publish Release Artifact
+on: [workflow_dispatch]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: REFramework
+          run-id: 37352025664
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete v-darwin-latest -y --repo Ghostkwebb/REFramework-appleSilicon || true
+          gh release create v-darwin-latest dinput8.dll --repo Ghostkwebb/REFramework-appleSilicon --title "Darwin Build Latest" --notes "Built from commit 220e21ad"
