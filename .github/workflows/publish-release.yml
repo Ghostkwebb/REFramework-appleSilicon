@@ -38,6 +38,8 @@ jobs:
             exit 1
           fi
           echo "Found dinput8.dll at: $DLL_PATH"
-          cp "$DLL_PATH" ./dinput8.dll
+          if [ "$DLL_PATH" != "./dinput8.dll" ]; then
+            cp "$DLL_PATH" ./dinput8.dll
+          fi
           gh release delete v1.99.0-darwin -y --repo Ghostkwebb/REFramework-appleSilicon || true
           gh release create v1.99.0-darwin ./dinput8.dll --repo Ghostkwebb/REFramework-appleSilicon --title "Darwin Build Latest" --notes "Latest automated build"
