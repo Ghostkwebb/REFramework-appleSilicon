@@ -26,6 +26,20 @@ D3D12Hook::~D3D12Hook() {
     unhook();
 }
 
+static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
+    if (queue == nullptr || !utility::DarwinHost::is_valid_command_queue(queue)) {
+        return false;
+    }
+    bool is_direct = false;
+    __try {
+        const auto desc = queue->GetDesc();
+        is_direct = (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        is_direct = false;
+    }
+    return is_direct;
+}
+
 void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, void* r8, void* r9) {
     if (g_inside_d3d12_hook) {
         spdlog::info("[Streamline] linkSwapchainToCmdQueue: {:x} (inside D3D12 hook)", (uintptr_t)_ReturnAddress());
@@ -54,16 +68,11 @@ void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, v
 
     if (s_captured_command_queue == nullptr) {
         for (void* arg : {rcx, rdx, r8, r9}) {
-            if (arg != nullptr && utility::DarwinHost::is_valid_command_queue((ID3D12CommandQueue*)arg)) {
-                __try {
-                    auto q = (ID3D12CommandQueue*)arg;
-                    const auto desc = q->GetDesc();
-                    if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-                        spdlog::info("[Streamline] Captured direct game command queue from linkSwapchainToCmdQueue: {:x}", (uintptr_t)q);
-                        s_captured_command_queue = q;
-                        break;
-                    }
-                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            if (arg != nullptr && is_direct_command_queue_seh((ID3D12CommandQueue*)arg)) {
+                auto q = (ID3D12CommandQueue*)arg;
+                spdlog::info("[Streamline] Captured direct game command queue from linkSwapchainToCmdQueue: {:x}", (uintptr_t)q);
+                s_captured_command_queue = q;
+                break;
             }
         }
     }
@@ -135,16 +144,9 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
 }
 
 void WINAPI D3D12Hook::execute_command_lists(ID3D12CommandQueue* queue, UINT num_command_lists, ID3D12CommandList* const* command_lists) {
-    if (s_captured_command_queue == nullptr && queue != nullptr && utility::DarwinHost::is_valid_command_queue(queue)) {
-        __try {
-            const auto desc = queue->GetDesc();
-            if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-                s_captured_command_queue = queue;
-                spdlog::info("D3D12Hook: Captured direct game command queue via ExecuteCommandLists: {:x}", (uintptr_t)queue);
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            // ignore
-        }
+    if (s_captured_command_queue == nullptr && is_direct_command_queue_seh(queue)) {
+        s_captured_command_queue = queue;
+        spdlog::info("D3D12Hook: Captured direct game command queue via ExecuteCommandLists: {:x}", (uintptr_t)queue);
     }
 
     auto orig = s_execute_command_lists_hook->get_original<decltype(D3D12Hook::execute_command_lists)*>();
@@ -770,19 +772,12 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
             const auto addr = (uintptr_t)swap_chain + off;
             if (IsBadReadPtr((void*)addr, sizeof(void*))) break;
             auto candidate = *(ID3D12CommandQueue**)addr;
-            if (candidate != nullptr && utility::DarwinHost::is_valid_command_queue(candidate)) {
-                __try {
-                    const auto qdesc = candidate->GetDesc();
-                    if (qdesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-                        spdlog::info("D3D12Hook: Dynamically resolved direct command queue in swapchain at offset 0x{:X}: {:x}", off, (uintptr_t)candidate);
-                        d3d12->m_command_queue = candidate;
-                        s_captured_command_queue = candidate;
-                        d3d12->s_command_queue_offset = off;
-                        break;
-                    }
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    // continue scanning
-                }
+            if (candidate != nullptr && is_direct_command_queue_seh(candidate)) {
+                spdlog::info("D3D12Hook: Dynamically resolved direct command queue in swapchain at offset 0x{:X}: {:x}", off, (uintptr_t)candidate);
+                d3d12->m_command_queue = candidate;
+                s_captured_command_queue = candidate;
+                d3d12->s_command_queue_offset = off;
+                break;
             }
         }
     }
