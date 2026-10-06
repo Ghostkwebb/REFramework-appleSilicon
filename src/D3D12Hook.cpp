@@ -72,6 +72,14 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
 
     spdlog::info("create_swapchain called");
 
+    if (device != nullptr) {
+        Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue{};
+        if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue))) && queue != nullptr) {
+            spdlog::info("D3D12Hook: Captured real game command queue from create_swapchain: {:x}", (uintptr_t)queue.Get());
+            s_captured_command_queue = queue;
+        }
+    }
+
     while (g_framework == nullptr) {
         std::this_thread::yield();
     }
@@ -606,6 +614,10 @@ bool D3D12Hook::unhook() {
 
     spdlog::info("Unhooking D3D12");
 
+    m_command_queue = nullptr;
+    m_fallback_command_queue.Reset();
+    s_captured_command_queue.Reset();
+
     m_present_hook.reset();
     m_swapchain_hook.reset();
 
@@ -677,7 +689,10 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         d3d12->m_device = temp_device.Get();
     }
 
-    if (d3d12->s_command_queue_offset >= sizeof(void*) && (d3d12->s_command_queue_offset % sizeof(void*) == 0)) {
+    // Prefer real game command queue captured from create_swapchain if available
+    if (s_captured_command_queue != nullptr) {
+        d3d12->m_command_queue = s_captured_command_queue.Get();
+    } else if (!utility::DarwinHost::is_darwin() && d3d12->s_command_queue_offset >= sizeof(void*) && (d3d12->s_command_queue_offset % sizeof(void*) == 0)) {
         if (d3d12->m_using_proton_swapchain) {
             const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->s_proton_swapchain_offset);
             if (real_swapchain != 0 && !IsBadReadPtr((void*)(real_swapchain + d3d12->s_command_queue_offset), sizeof(void*))) {
@@ -693,15 +708,37 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         if (s_wine_cq_delta != 0 && d3d12->m_command_queue != nullptr) {
             d3d12->m_command_queue = (ID3D12CommandQueue*)((uintptr_t)d3d12->m_command_queue + s_wine_cq_delta);
         }
-
-        if (d3d12->m_command_queue != nullptr && 
-            (IsBadReadPtr(d3d12->m_command_queue, sizeof(void*)) || IsBadReadPtr(*(void**)d3d12->m_command_queue, sizeof(void*)))) 
-        {
-            spdlog::error("D3D12Hook: Resolved invalid m_command_queue pointer {:x}", (uintptr_t)d3d12->m_command_queue);
-            d3d12->m_command_queue = nullptr;
-        }
     } else {
         d3d12->m_command_queue = nullptr;
+    }
+
+    // Validate that m_command_queue is a genuine, callable Win32 COM interface.
+    // If not (e.g. on macOS / D3DMetal where swapchain stores raw Metal pointers),
+    // create a dedicated command queue directly on the real ID3D12Device.
+    if (!utility::DarwinHost::is_valid_command_queue(d3d12->m_command_queue)) {
+        if (d3d12->m_command_queue != nullptr) {
+            spdlog::warn("D3D12Hook: Resolved pointer {:x} is not a valid COM command queue, using fallback", (uintptr_t)d3d12->m_command_queue);
+            d3d12->m_command_queue = nullptr;
+        }
+
+        if (d3d12->m_fallback_command_queue == nullptr && d3d12->m_device != nullptr) {
+            D3D12_COMMAND_QUEUE_DESC queue_desc{};
+            queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+            queue_desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+            queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+            queue_desc.NodeMask = 0;
+
+            const auto hr = d3d12->m_device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&d3d12->m_fallback_command_queue));
+            if (SUCCEEDED(hr) && d3d12->m_fallback_command_queue != nullptr) {
+                spdlog::info("D3D12Hook: Successfully created dedicated fallback command queue: {:x}", (uintptr_t)d3d12->m_fallback_command_queue.Get());
+            } else {
+                spdlog::error("D3D12Hook: Failed to create dedicated fallback command queue: 0x{:X}", (uint32_t)hr);
+            }
+        }
+
+        if (d3d12->m_fallback_command_queue != nullptr) {
+            d3d12->m_command_queue = d3d12->m_fallback_command_queue.Get();
+        }
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {

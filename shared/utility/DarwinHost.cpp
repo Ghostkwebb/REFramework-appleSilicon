@@ -155,6 +155,36 @@ intptr_t DarwinHost::calculate_command_queue_delta(void* swapchain, uint32_t off
     return delta;
 }
 
+bool DarwinHost::is_valid_command_queue(ID3D12CommandQueue* queue) {
+    if (queue == nullptr || IsBadReadPtr(queue, sizeof(void*))) {
+        return false;
+    }
+    const auto ptr_val = (uintptr_t)queue;
+    // On macOS / Rosetta, native Objective-C / Metal heap objects reside in 0x600000000000+
+    if ((ptr_val & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+        return false;
+    }
+    const auto vtable = *(void***)queue;
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 10)) {
+        return false;
+    }
+    const auto fn = (uintptr_t)vtable[0];
+    if ((fn & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+        return false;
+    }
+    bool ok = false;
+    __try {
+        IUnknown* test = nullptr;
+        if (SUCCEEDED(queue->QueryInterface(__uuidof(ID3D12CommandQueue), (void**)&test)) && test != nullptr) {
+            test->Release();
+            ok = true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+
 uint32_t DarwinHost::get_default_menu_key() {
     return is_darwin() ? VK_F10 : VK_INSERT;
 }

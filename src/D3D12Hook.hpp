@@ -108,6 +108,8 @@ protected:
     IDXGISwapChain3* m_swapchain_0{};
     IDXGISwapChain3* m_swapchain_1{};
     ID3D12CommandQueue* m_command_queue{ nullptr };
+    Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_fallback_command_queue{};
+    static inline Microsoft::WRL::ComPtr<ID3D12CommandQueue> s_captured_command_queue{};
     UINT m_display_width{ NULL };
     UINT m_display_height{ NULL };
     UINT m_render_width{ NULL };
