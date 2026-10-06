@@ -1,4 +1,4 @@
-﻿#include <algorithm>
+#include <algorithm>
 #include <array>
 #include <optional>
 
@@ -72,46 +72,44 @@ void LooseTextureLoader::on_draw_ui() {
             g_framework->request_save_config();
         }
 
-        if (!m_enabled->value()) {
-            return;
-        }
-
-        if (m_disable_texture_cache->draw("Disable Texture Cache (force reload)")) {
-            g_framework->request_save_config();
-        }
-
-        ImGui::TextWrapped(
-            "The game caches textures and only reloads them from disk when nothing references them anymore.\n"
-            "Enabling this option forces a reload every time, bypassing the cache.\n"
-            "WARNING: This creates duplicate texture instances in memory and can be very memory-intensive.\n"
-            "Only use this while actively editing textures, and disable it during normal play."
-        );
-
-        ImGui::Separator();
-
-        // Show loaded resource counters
-        {
-            std::lock_guard lock(m_resource_path_counters_mutex);
-
-            ImGui::Text("Unique loose textures loaded: %zu", m_resource_path_counters.size());
-
-            if (ImGui::Button("Reset Counters")) {
-                m_resource_path_counters.clear();
-                m_recent_resources.clear();
+        if (m_enabled->value()) {
+            if (m_disable_texture_cache->draw("Disable Texture Cache (force reload)")) {
+                g_framework->request_save_config();
             }
 
-            if (!m_recent_resources.empty() && ImGui::TreeNode("Loaded Loose Textures (recent)")) {
-                for (const auto& path : m_recent_resources) {
-                    auto it = m_resource_path_counters.find(path);
-                    uint64_t count = (it != m_resource_path_counters.end()) ? it->second : 0;
-                    ImGui::Text("[%llu] %s", count, utility::narrow(path).c_str());
+            ImGui::TextWrapped(
+                "The game caches textures and only reloads them from disk when nothing references them anymore.\n"
+                "Enabling this option forces a reload every time, bypassing the cache.\n"
+                "WARNING: This creates duplicate texture instances in memory and can be very memory-intensive.\n"
+                "Only use this while actively editing textures, and disable it during normal play."
+            );
+
+            ImGui::Separator();
+
+            // Show loaded resource counters
+            {
+                std::lock_guard lock(m_resource_path_counters_mutex);
+
+                ImGui::Text("Unique loose textures loaded: %zu", m_resource_path_counters.size());
+
+                if (ImGui::Button("Reset Counters")) {
+                    m_resource_path_counters.clear();
+                    m_recent_resources.clear();
                 }
 
-                if (m_resource_path_counters.size() > m_recent_resources.size()) {
-                    ImGui::TextDisabled("... and %zu more", m_resource_path_counters.size() - m_recent_resources.size());
-                }
+                if (!m_recent_resources.empty() && ImGui::TreeNode("Loaded Loose Textures (recent)")) {
+                    for (const auto& path : m_recent_resources) {
+                        auto it = m_resource_path_counters.find(path);
+                        uint64_t count = (it != m_resource_path_counters.end()) ? it->second : 0;
+                        ImGui::Text("[%llu] %s", count, utility::narrow(path).c_str());
+                    }
 
-                ImGui::TreePop();
+                    if (m_resource_path_counters.size() > m_recent_resources.size()) {
+                        ImGui::TextDisabled("... and %zu more", m_resource_path_counters.size() - m_recent_resources.size());
+                    }
+
+                    ImGui::TreePop();
+                }
             }
         }
 

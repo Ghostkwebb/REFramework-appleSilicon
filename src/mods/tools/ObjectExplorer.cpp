@@ -362,13 +362,13 @@ ObjectExplorer::ObjectExplorer()
 void ObjectExplorer::on_draw_dev_ui() {
     ImGui::SetNextItemOpen(false, ImGuiCond_::ImGuiCond_Once);
 
+    if (!ImGui::CollapsingHeader(get_name().data())) {
+        return;
+    }
+
     if (m_do_init) {
         init();
         m_do_init = false;
-    }
-
-    if (!m_do_init && !ImGui::CollapsingHeader(get_name().data())) {
-        return;
     }
     if (ImGui::Button("Dump SDK")) {
         std::thread t(&ObjectExplorer::generate_sdk, this, false);
@@ -445,18 +445,13 @@ void ObjectExplorer::on_draw_dev_ui() {
         // REType::name at offset 0x20 is stable across all supported TDB versions.
         // first loop, sort
         std::sort(singletons.begin(), singletons.end(), [](REManagedObject* a, REManagedObject* b) {
-            auto a_type = a->safe_get_type();
-            auto b_type = b->safe_get_type();
+            auto a_type = a != nullptr ? a->safe_get_type() : nullptr;
+            auto b_type = b != nullptr ? b->safe_get_type() : nullptr;
 
-            if (a_type == nullptr || a_type->get_type_name() == nullptr) {
-                return true;
-            }
+            std::string_view a_name = (a_type != nullptr && a_type->get_type_name() != nullptr) ? a_type->get_type_name() : "";
+            std::string_view b_name = (b_type != nullptr && b_type->get_type_name() != nullptr) ? b_type->get_type_name() : "";
 
-            if (b_type == nullptr || b_type->get_type_name() == nullptr) {
-                return false;
-            }
-
-            return std::string_view{ a_type->get_type_name() } < std::string_view{ b_type->get_type_name() };
+            return a_name < b_name;
         });
 
         // Display the nodes
@@ -4663,7 +4658,6 @@ void ObjectExplorer::populate_classes() {
                 continue;
             }
 
-            spdlog::info("{:s}", name);
             m_sorted_types.push_back(name);
             m_types[name] = re_type;
 
@@ -4692,8 +4686,6 @@ void ObjectExplorer::populate_enums() {
             has_enums = l.size() > 0;
 
             for (auto& elem : l) {
-                spdlog::info(" {:x}[ {} {} ]", (uintptr_t)&elem, elem.first, elem.second.name);
-
                 std::string name = elem.second.name;
                 std::string nspace = name.substr(0, name.find_last_of("."));
                 name = name.substr(name.find_last_of(".") + 1);
@@ -4703,23 +4695,23 @@ void ObjectExplorer::populate_enums() {
                 }
 
 
-                out_file << "namespace " << nspace << " {" << std::endl;
-                out_file << "    enum " << name << " {" << std::endl;
+                out_file << "namespace " << nspace << " {\n";
+                out_file << "    enum " << name << " {\n";
 
                 for (auto node = elem.second.values; node != nullptr; node = node->next) {
                     if (node->name == nullptr) {
                         continue;
                     }
 
-                    spdlog::info("     {} = {}", node->name, node->value);
-                    out_file << "        " << node->name << " = " << node->value << "," << std::endl;
+                    out_file << "        " << node->name << " = " << node->value << ",\n";
 
                     m_enums.emplace(elem.second.name, EnumDescriptor{ node->name, node->value });
                 }
 
-                out_file << "    };" << std::endl;
-                out_file << "}" << std::endl;
+                out_file << "    };\n";
+                out_file << "}\n";
             }
+            out_file.flush();
         } else {
             spdlog::error("Failed to find EnumList");
         }
@@ -4765,15 +4757,14 @@ void ObjectExplorer::populate_enums() {
                     nspace.replace(pos, 1, "::");
                 }
 
-                out_file << "namespace " << nspace << " {" << std::endl;
+                out_file << "namespace " << nspace << " {\n";
                 
                 if (flags_attribute_runtime_type != nullptr && t->has_attribute(flags_attribute_runtime_type, true)) {
-                    out_file << "    // [Flags]" << std::endl;
+                    out_file << "    // [Flags]\n";
                 }
 
-                out_file << "    enum " << name << " {" << std::endl;
+                out_file << "    enum " << name << " {\n";
 
-                spdlog::info("ENUM {}", t->get_full_name().c_str());
                 enum_types.push_back(t);
                 auto fields = t->get_fields();
 
@@ -4804,18 +4795,16 @@ void ObjectExplorer::populate_enums() {
 
                         m_enums.emplace(t->get_full_name(), EnumDescriptor{ f->get_name(), enum_data });
 
-                        // Log
-                        spdlog::info(" {} = {}", f->get_name(), enum_data);
-
                         // Write to file
-                        out_file << "        " << f->get_name() << " = " << enum_data << "," << std::endl;
+                        out_file << "        " << f->get_name() << " = " << enum_data << ",\n";
                     }
                 }
 
-                out_file << "    };" << std::endl;
-                out_file << "}" << std::endl;
+                out_file << "    };\n";
+                out_file << "}\n";
             }
         }
+        out_file.flush();
     }
 }
 
