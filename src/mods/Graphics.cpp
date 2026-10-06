@@ -10,6 +10,7 @@
 
 #include "VR.hpp"
 #include "Graphics.hpp"
+#include "REFramework.hpp"
 
 #ifdef REFRAMEWORK_UNIVERSAL
 #include "sdk/regenny/re9/via/Window.hpp"
@@ -293,6 +294,24 @@ void Graphics::on_draw_ui() {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("On a 16:10 display, keeps the game at 16:9 with black bars instead of\n"
                                   "stretching to fill the screen. Prevents UI element misalignment.");
+            }
+
+            if (!m_ultrawide_16_10_mode->value()) {
+                if (m_16_10_fit_mode->draw("16:10 Mode: Fill Entire Screen (Fit)")) {
+                    m_last_applied_display_type = std::nullopt;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("On 16:10 displays (including MacBook screens 1728x1117, 1512x982, Retina),\n"
+                                      "stretches to fill the entire height, completely removing the bottom black bar.");
+                }
+
+                if (m_macbook_notch_align_bottom->draw("MacBook: Align Window Below Notch (Flush Bottom)")) {
+                    m_last_applied_display_type = std::nullopt;
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("On MacBooks with a camera notch, repositions the window to start immediately\n"
+                                      "below the notch and end flush at the screen bottom, ensuring pure 16:10 with no notch intrusion.");
+                }
             }
 
             if (!sdk::GameIdentity::get().is_mhwilds()) {
@@ -819,7 +838,13 @@ void Graphics::do_ultrawide_fix() {
                 display_type = via::DisplayType::Uniform4x3;
             } else if (ratio >= 1.50 && ratio <= 1.65) {
                 // 16:10 family (including MacBook screens: 1728x1117, 3024x1964, 3456x2234, etc.)
-                display_type = use_16_10_letterbox ? via::DisplayType::Uniform16x9 : via::DisplayType::Uniform16x10;
+                if (use_16_10_letterbox) {
+                    display_type = via::DisplayType::Uniform16x9;
+                } else if (m_16_10_fit_mode->value()) {
+                    display_type = via::DisplayType::Fit;
+                } else {
+                    display_type = via::DisplayType::Uniform16x10;
+                }
             } else if (glm::abs(ratio - _16_9) < epsilon) {
                 display_type = via::DisplayType::Uniform16x9;
             } else if (glm::abs(ratio - _21_9) < 0.08) {
@@ -839,6 +864,45 @@ void Graphics::do_ultrawide_fix() {
             set_display_type_method->call(sdk::get_thread_context(), main_view, display_type);
             m_last_applied_view = (uintptr_t)main_view;
             m_last_applied_display_type = (int32_t)display_type;
+        }
+
+        // Optional MacBook camera notch alignment: shift window below notch and flush with bottom
+        static bool s_notch_aligned = false;
+        if (m_macbook_notch_align_bottom->value()) {
+            HWND hwnd = g_framework->get_window();
+            if (hwnd != nullptr && IsWindow(hwnd)) {
+                RECT rect{};
+                if (GetClientRect(hwnd, &rect) && rect.right > 0 && rect.bottom > 0) {
+                    const int w = rect.right - rect.left;
+                    const int h = rect.bottom - rect.top;
+                    const double r = static_cast<double>(w) / static_cast<double>(h);
+                    // MacBook notch geometry signature: ratio is ~1.538 - 1.547
+                    if (r >= 1.50 && r <= 1.58) {
+                        const int usable_h = static_cast<int>(std::round(static_cast<double>(w) / 1.6));
+                        const int notch_h = h - usable_h;
+                        if (notch_h > 0 && notch_h <= 120) {
+                            RECT win_rect{};
+                            GetWindowRect(hwnd, &win_rect);
+                            if (win_rect.top != notch_h || (win_rect.bottom - win_rect.top) != usable_h) {
+                                SetWindowPos(hwnd, nullptr, win_rect.left, notch_h, w, usable_h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                                s_notch_aligned = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (s_notch_aligned) {
+            HWND hwnd = g_framework->get_window();
+            if (hwnd != nullptr && IsWindow(hwnd)) {
+                RECT win_rect{};
+                GetWindowRect(hwnd, &win_rect);
+                if (win_rect.top > 0) {
+                    const int w = win_rect.right - win_rect.left;
+                    const int full_h = (win_rect.bottom - win_rect.top) + win_rect.top;
+                    SetWindowPos(hwnd, nullptr, win_rect.left, 0, w, full_h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
+                }
+            }
+            s_notch_aligned = false;
         }
     }
 }
