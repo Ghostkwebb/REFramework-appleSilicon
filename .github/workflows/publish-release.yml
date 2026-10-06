@@ -25,5 +25,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          echo "Downloaded files:"
+          ls -laR
+          # Unzip any archives if present
+          for f in $(find . -name "*.zip"); do
+            unzip -o "$f" -d unzipped/ || true
+          done
+          # Find dinput8.dll anywhere
+          DLL_PATH=$(find . -name "dinput8.dll" | head -n 1)
+          if [ -z "$DLL_PATH" ]; then
+            echo "Error: Could not find dinput8.dll!"
+            exit 1
+          fi
+          echo "Found dinput8.dll at: $DLL_PATH"
+          cp "$DLL_PATH" ./dinput8.dll
           gh release delete v1.99.0-darwin -y --repo Ghostkwebb/REFramework-appleSilicon || true
-          gh release create v1.99.0-darwin dinput8.dll --repo Ghostkwebb/REFramework-appleSilicon --title "Darwin Build Latest" --notes "Latest automated build"
+          gh release create v1.99.0-darwin ./dinput8.dll --repo Ghostkwebb/REFramework-appleSilicon --title "Darwin Build Latest" --notes "Latest automated build"
