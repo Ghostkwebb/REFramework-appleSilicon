@@ -133,6 +133,17 @@ void REFramework::hook_monitor() {
         }
 
         if (m_initialized && m_wnd != 0 && now - m_last_message_time > std::chrono::seconds(5)) {
+            if (m_windows_message_hook != nullptr) {
+                HWND fg = GetForegroundWindow();
+                if (fg != nullptr) {
+                    DWORD fg_pid = 0;
+                    GetWindowThreadProcessId(fg, &fg_pid);
+                    if (fg_pid == GetCurrentProcessId()) {
+                        m_windows_message_hook->hook_window(fg);
+                    }
+                }
+            }
+
             if (m_windows_message_hook != nullptr && m_windows_message_hook->is_hook_intact()) {
                 spdlog::info("Windows message hook is still intact, ignoring...");
                 m_last_message_time = now;
@@ -1292,11 +1303,16 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
+        const bool is_menu_key = (w_param == menu_key);
+        const bool is_darwin_fallback = utility::DarwinHost::is_darwin() &&
+            (w_param == VK_F10 || w_param == VK_OEM_3 || w_param == VK_INSERT || w_param == VK_DELETE);
 
-        if (w_param == menu_key && !m_last_keys[w_param]) {
+        if ((is_menu_key || is_darwin_fallback) && !m_last_keys[w_param]) {
             std::lock_guard _{m_input_mutex};
 
             set_draw_ui(!m_draw_ui);
+            m_last_keys[w_param] = true;
+            return false; // Consume menu toggle to prevent Windows/Wine menu activation
         }
 
         m_last_keys[w_param] = true;
@@ -1855,6 +1871,17 @@ void REFramework::preserve_main_window_position(const char* window_name) {
         return;
     }
 
+    // Ensure sensible minimum dimensions so the window can never be squashed into an invisible sliver
+    window_size.x = ImMax(window_size.x, 380.0f);
+    window_size.y = ImMax(window_size.y, 450.0f);
+
+    if (const auto* window = ImGui::FindWindowByName(window_name); window != nullptr) {
+        if (window->SizeFull.y < 200.0f || (!window->Collapsed && window->Size.y < 200.0f)) {
+            window_size.y = 550.0f;
+            restoring_scaled_size = true;
+        }
+    }
+
     if (m_main_window_display_size.x > 0.0f && m_main_window_display_size.y > 0.0f) {
         const auto visibility_padding = ImMax(ImGui::GetStyle().DisplayWindowPadding, ImGui::GetStyle().DisplaySafeAreaPadding);
 
@@ -1871,9 +1898,8 @@ void REFramework::preserve_main_window_position(const char* window_name) {
         }
     }
 
-    ImGui::SetNextWindowPos(position, ImGuiCond_Always);
-
-    if (restoring_scaled_size) {
+    if (restoring_scaled_size || display_size_changed) {
+        ImGui::SetNextWindowPos(position, ImGuiCond_Always);
         ImGui::SetNextWindowSize(window_size, ImGuiCond_Always);
         REFrameworkConfig::get()->set_ui_layout_state(
             static_cast<int32_t>(m_main_window_display_size.x),
@@ -1884,6 +1910,8 @@ void REFramework::preserve_main_window_position(const char* window_name) {
             m_ui_layout_save_pending = true;
             m_ui_layout_last_changed = std::chrono::steady_clock::now();
         }
+    } else {
+        ImGui::SetNextWindowPos(position, ImGuiCond_Once);
     }
 }
 
@@ -1941,15 +1969,21 @@ void REFramework::draw_ui() {
     }
 
     ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(300, 500), ImGuiCond_::ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(450, 600), ImGuiCond_::ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(350.0f, 250.0f), ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::SetNextWindowCollapsed(false, ImGuiCond_::ImGuiCond_FirstUseEver);
 
     ImGui::PushFont(m_default_font, m_font_size);
-    static const auto REF_NAME = std::format("REFramework [{}+{}-{:.8}]", REF_TAG, REF_COMMITS_PAST_TAG, REF_COMMIT_HASH);
+    static const auto REF_NAME = std::format("REFramework [{}+{}-{:.8}]###REFramework_MainWindow", REF_TAG, REF_COMMITS_PAST_TAG, REF_COMMIT_HASH);
     preserve_main_window_position(REF_NAME.c_str());
     bool is_open = true;
     ImGui::Begin(REF_NAME.c_str(), &is_open);
     const auto* main_window = ImGui::GetCurrentWindow();
-    ImGui::Text("Default Menu Key: Insert");
+    if (utility::DarwinHost::is_darwin()) {
+        ImGui::Text("Menu Key: F10 / Fn+F10 / ~ (Tilde)");
+    } else {
+        ImGui::Text("Default Menu Key: Insert");
+    }
     ImGui::Checkbox("Transparency", &m_ui_option_transparent);
     ImGui::SameLine();
     ImGui::Text("(?)");
@@ -2277,9 +2311,12 @@ bool REFramework::initialize() {
         swap_chain->GetDesc(&swap_desc);
 
         m_wnd = swap_desc.OutputWindow;
+        if (HWND root = GetAncestor(m_wnd, GA_ROOT); root != nullptr) {
+            spdlog::info("Found GA_ROOT window {:x} for output window {:x}", (uintptr_t)root, (uintptr_t)m_wnd);
+            m_wnd = root;
+        }
 
-
-        spdlog::info("Window Handle: {0:x}", (uintptr_t)m_wnd);
+        spdlog::info("Window Handle: {:x}", (uintptr_t)m_wnd);
         spdlog::info("Initializing ImGui");
 
         IMGUI_CHECKVERSION();
@@ -2346,6 +2383,12 @@ bool REFramework::initialize() {
         swap_chain->GetDesc(&swap_desc);
 
         m_wnd = swap_desc.OutputWindow;
+        if (HWND root = GetAncestor(m_wnd, GA_ROOT); root != nullptr) {
+            spdlog::info("Found GA_ROOT window {:x} for output window {:x}", (uintptr_t)root, (uintptr_t)m_wnd);
+            m_wnd = root;
+        }
+
+        spdlog::info("Window Handle: {:x}", (uintptr_t)m_wnd);
 
 
         IMGUI_CHECKVERSION();

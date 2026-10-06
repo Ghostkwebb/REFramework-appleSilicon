@@ -1,6 +1,8 @@
 #pragma once
 
 #include <functional>
+#include <unordered_map>
+#include <mutex>
 
 #include <Windows.h>
 
@@ -22,11 +24,22 @@ public:
     // explicitly if you need to remove the message hook for some reason.
     bool remove();
 
+    bool hook_window(HWND wnd);
+
     auto is_valid() const {
-        return m_original_proc != nullptr;
+        return m_original_proc != nullptr || !m_original_procs.empty();
     }
 
     auto get_original() const {
+        return m_original_proc;
+    }
+
+    WNDPROC get_original(HWND wnd) const {
+        std::lock_guard _{ m_procs_mutex };
+        const auto it = m_original_procs.find(wnd);
+        if (it != m_original_procs.end()) {
+            return it->second;
+        }
         return m_original_proc;
     }
 
@@ -42,4 +55,6 @@ public:
 private:
     HWND m_wnd;
     WNDPROC m_original_proc;
+    mutable std::recursive_mutex m_procs_mutex{};
+    std::unordered_map<HWND, WNDPROC> m_original_procs{};
 };

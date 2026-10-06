@@ -432,6 +432,9 @@ bool D3D12Hook::hook() {
         } else if (swapchain_classname.contains("FrameInterpolationSwapChain")) { // FSR3
             spdlog::info("Found FSR3 swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
             m_using_frame_generation_swapchain = true;
+        } else if (GetModuleHandleA("sl.interposer.dll") != nullptr) {
+            spdlog::info("Found Streamline module (sl.interposer.dll) during dummy initialization: {:x}", (uintptr_t)swap_chain1);
+            m_using_frame_generation_swapchain = true;
         }
     } catch (const std::exception& e) {
         spdlog::error("Failed to get type info: {}", e.what());
@@ -743,8 +746,10 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     if (d3d12->m_swapchain_0 == nullptr) {
         d3d12->m_swapchain_0 = swap_chain;
+        spdlog::info("D3D12Hook: Primary swapchain registered: {:x}", (uintptr_t)swap_chain);
     } else if (d3d12->m_swapchain_1 == nullptr && swap_chain != d3d12->m_swapchain_0) {
         d3d12->m_swapchain_1 = swap_chain;
+        spdlog::info("D3D12Hook: Secondary swapchain registered: {:x}", (uintptr_t)swap_chain);
     }
     
     // Restore the original bytes

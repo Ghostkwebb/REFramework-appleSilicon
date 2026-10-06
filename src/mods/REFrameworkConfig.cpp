@@ -84,6 +84,14 @@ void REFrameworkConfig::on_config_load(const utility::Config& cfg) {
         option.config_load(cfg);
     }
 
+    if (utility::DarwinHost::is_darwin()) {
+        // If legacy PC defaults (45 = Insert, 46 = Delete) are configured, migrate to VK_F10 for macOS keyboards
+        if (m_menu_key->value() == VK_INSERT || m_menu_key->value() == VK_DELETE) {
+            spdlog::info("[Config] Migrating legacy menu key {} to VK_F10 for macOS/Darwin", m_menu_key->value());
+            m_menu_key->value() = (int)VK_F10;
+        }
+    }
+
     if (m_remember_menu_state->value()) {
         g_framework->set_draw_ui(m_menu_open->value(), false);
     }
