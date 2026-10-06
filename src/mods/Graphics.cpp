@@ -302,7 +302,9 @@ void Graphics::on_draw_ui() {
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("On 16:10 displays (including MacBook screens 1728x1117, 1512x982, Retina),\n"
-                                      "stretches to fill the entire height, completely removing the bottom black bar.");
+                                      "stretches to fill the entire height, completely removing the bottom black bar.\n"
+                                      "Note: RE Engine's 2D UI hit-testing does not scale with Fit mode, which causes\n"
+                                      "a mouse cursor offset in menus (best used with controller / gamepad).");
                 }
 
                 if (m_macbook_notch_align_bottom->draw("MacBook: Align Window Below Notch (Flush Bottom)")) {
