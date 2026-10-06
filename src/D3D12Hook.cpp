@@ -52,6 +52,22 @@ void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, v
     auto& hook = D3D12Hook::s_streamline.link_swapchain_to_cmd_queue_hook;
     const auto result = hook->get_original<decltype(link_swapchain_to_cmd_queue)>()(rcx, rdx, r8, r9);
 
+    if (s_captured_command_queue == nullptr) {
+        for (void* arg : {rcx, rdx, r8, r9}) {
+            if (arg != nullptr && utility::DarwinHost::is_valid_command_queue((ID3D12CommandQueue*)arg)) {
+                __try {
+                    auto q = (ID3D12CommandQueue*)arg;
+                    const auto desc = q->GetDesc();
+                    if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+                        spdlog::info("[Streamline] Captured direct game command queue from linkSwapchainToCmdQueue: {:x}", (uintptr_t)q);
+                        s_captured_command_queue = q;
+                        break;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {}
+            }
+        }
+    }
+
     // Re-hooks present after the above function creates the swapchain
     // This allows the hook to immediately still function
     // rather than waiting on the hook monitor to notice the hook isn't working
@@ -116,6 +132,23 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
     }
 
     return result;
+}
+
+void WINAPI D3D12Hook::execute_command_lists(ID3D12CommandQueue* queue, UINT num_command_lists, ID3D12CommandList* const* command_lists) {
+    if (s_captured_command_queue == nullptr && queue != nullptr && utility::DarwinHost::is_valid_command_queue(queue)) {
+        __try {
+            const auto desc = queue->GetDesc();
+            if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+                s_captured_command_queue = queue;
+                spdlog::info("D3D12Hook: Captured direct game command queue via ExecuteCommandLists: {:x}", (uintptr_t)queue);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            // ignore
+        }
+    }
+
+    auto orig = s_execute_command_lists_hook->get_original<decltype(D3D12Hook::execute_command_lists)*>();
+    orig(queue, num_command_lists, command_lists);
 }
 
 void D3D12Hook::hook_streamline(HMODULE dlssg_module) try {
@@ -317,6 +350,8 @@ bool D3D12Hook::hook() {
         spdlog::error("Failed to create D3D12 Dummy Command Queue");
         return false;
     }
+
+    s_command_queue_vtable = *(void***)command_queue;
 
     spdlog::info("Creating dummy swapchain");
 
@@ -585,6 +620,18 @@ void D3D12Hook::hook_impl() {
     auto& present_fn = s_swapchain_vtable[8]; // Present
     m_present_hook = std::make_unique<PointerHook>(&present_fn, &D3D12Hook::present);
 
+    if (s_execute_command_lists_hook == nullptr && s_command_queue_vtable != nullptr) {
+        try {
+            if (!IsBadReadPtr(&s_command_queue_vtable[10], sizeof(void*)) && s_command_queue_vtable[10] != nullptr) {
+                auto& exec_fn = s_command_queue_vtable[10];
+                s_execute_command_lists_hook = std::make_unique<PointerHook>(&exec_fn, &D3D12Hook::execute_command_lists);
+                spdlog::info("D3D12Hook: Hooked ID3D12CommandQueue::ExecuteCommandLists");
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("D3D12Hook: Failed to hook ExecuteCommandLists: {}", e.what());
+        }
+    }
+
     if (s_create_swapchain_hook == nullptr && s_factory_vtable != nullptr) {
         try {
             if (!IsBadReadPtr(&s_factory_vtable[15], sizeof(void*)) && 
@@ -620,6 +667,7 @@ bool D3D12Hook::unhook() {
     m_command_queue = nullptr;
     m_fallback_command_queue.Reset();
     s_captured_command_queue.Reset();
+    s_execute_command_lists_hook.reset();
 
     m_present_hook.reset();
     m_swapchain_hook.reset();
@@ -692,10 +740,10 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         d3d12->m_device = temp_device.Get();
     }
 
-    // Prefer real game command queue captured from create_swapchain if available
+    // Prefer real game command queue captured from ExecuteCommandLists or create_swapchain
     if (s_captured_command_queue != nullptr) {
         d3d12->m_command_queue = s_captured_command_queue.Get();
-    } else if (!utility::DarwinHost::is_darwin() && d3d12->s_command_queue_offset >= sizeof(void*) && (d3d12->s_command_queue_offset % sizeof(void*) == 0)) {
+    } else if (d3d12->s_command_queue_offset >= sizeof(void*) && (d3d12->s_command_queue_offset % sizeof(void*) == 0)) {
         if (d3d12->m_using_proton_swapchain) {
             const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->s_proton_swapchain_offset);
             if (real_swapchain != 0 && !IsBadReadPtr((void*)(real_swapchain + d3d12->s_command_queue_offset), sizeof(void*))) {
@@ -713,6 +761,30 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         }
     } else {
         d3d12->m_command_queue = nullptr;
+    }
+
+    // Dynamic scan of swapchain if command queue not resolved yet
+    if (!utility::DarwinHost::is_valid_command_queue(d3d12->m_command_queue)) {
+        d3d12->m_command_queue = nullptr;
+        for (size_t off = sizeof(void*); off < 512 * sizeof(void*); off += sizeof(void*)) {
+            const auto addr = (uintptr_t)swap_chain + off;
+            if (IsBadReadPtr((void*)addr, sizeof(void*))) break;
+            auto candidate = *(ID3D12CommandQueue**)addr;
+            if (candidate != nullptr && utility::DarwinHost::is_valid_command_queue(candidate)) {
+                __try {
+                    const auto qdesc = candidate->GetDesc();
+                    if (qdesc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+                        spdlog::info("D3D12Hook: Dynamically resolved direct command queue in swapchain at offset 0x{:X}: {:x}", off, (uintptr_t)candidate);
+                        d3d12->m_command_queue = candidate;
+                        s_captured_command_queue = candidate;
+                        d3d12->s_command_queue_offset = off;
+                        break;
+                    }
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    // continue scanning
+                }
+            }
+        }
     }
 
     // Validate that m_command_queue is a genuine, callable Win32 COM interface.
