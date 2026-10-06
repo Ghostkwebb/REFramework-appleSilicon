@@ -88,6 +88,9 @@ public:
     bool is_pragmata()  const { return m_game == GameID::PRAGMATA; }
     bool is_onimusha_wots() const { return m_game == GameID::ONIMUSHA_WOTS; }
     bool is_onimusha2() const { return m_game == GameID::ONIMUSHA2; }
+    bool is_kunitsu()   const { return m_game == GameID::KUNITSU; }
+    bool is_ggr()       const { return m_game == GameID::GGR; }
+    bool is_gs456()     const { return m_game == GameID::GS456; }
 
 private:
     GameIdentity() = default;

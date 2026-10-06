@@ -598,10 +598,10 @@ bool Graphics::on_pre_gui_draw_element(REComponent* gui_element, void* primitive
     }
 
     auto game_object = gui_element->get_game_object();
-    static auto letter_box_behavior_t = sdk::GameIdentity::get().is_kunitsu() ? sdk::find_type_definition("app.LetterBoxBehavior") : nullptr;
-    static auto letter_box_behavior_retype = letter_box_behavior_t != nullptr ? letter_box_behavior_t->get_type() : nullptr;
-    static auto csmaskui_t = sdk::GameIdentity::get().is_drdr() ? sdk::find_type_definition("app.solid.gui.CSMaskUI") : nullptr;
-    static auto csmaskui_retype = csmaskui_t != nullptr ? csmaskui_t->get_type() : nullptr;
+    static ::RETypeDefinition* letter_box_behavior_t = sdk::GameIdentity::get().is_kunitsu() ? sdk::find_type_definition("app.LetterBoxBehavior") : nullptr;
+    static ::REType* letter_box_behavior_retype = letter_box_behavior_t != nullptr ? letter_box_behavior_t->get_type() : nullptr;
+    static ::RETypeDefinition* csmaskui_t = sdk::GameIdentity::get().is_drdr() ? sdk::find_type_definition("app.solid.gui.CSMaskUI") : nullptr;
+    static ::REType* csmaskui_retype = csmaskui_t != nullptr ? csmaskui_t->get_type() : nullptr;
 
     if (game_object != nullptr && game_object->get_transform() != nullptr) {
         // Ultrawide for Dead Rising Deluxe Remaster
