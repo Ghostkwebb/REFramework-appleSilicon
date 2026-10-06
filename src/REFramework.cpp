@@ -2079,46 +2079,6 @@ void REFramework::draw_ui() {
     }
 }
 
-static const wchar_t* get_system_string_data_seh(::SystemString* s, int32_t* out_len) {
-    if (s == nullptr || out_len == nullptr) {
-        return nullptr;
-    }
-    const wchar_t* data = nullptr;
-    __try {
-        *out_len = s->size;
-        data = s->data;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        data = nullptr;
-    }
-    return data;
-}
-
-static ::SystemString* call_via_version_method_seh(sdk::REMethodDefinition* m, sdk::VMContext* context) {
-    if (m == nullptr || context == nullptr) {
-        return nullptr;
-    }
-    ::SystemString* result = nullptr;
-    __try {
-        result = m->call<::SystemString*>(context);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        result = nullptr;
-    }
-    return result;
-}
-
-static std::string safe_get_version_string(sdk::REMethodDefinition* m, sdk::VMContext* context) {
-    auto sys_str = call_via_version_method_seh(m, context);
-    if (sys_str == nullptr) {
-        return "";
-    }
-    int32_t len = 0;
-    auto data = get_system_string_data_seh(sys_str, &len);
-    if (data == nullptr || len <= 0) {
-        return "";
-    }
-    return utility::narrow(std::wstring_view{data, static_cast<size_t>(len)});
-}
-
 void REFramework::draw_about() {
     if (!ImGui::CollapsingHeader("About")) {
         return;
@@ -2177,36 +2137,13 @@ void REFramework::draw_about() {
     ImGui::Separator();
 
     if (m_game_data_initialized && m_error.empty()) {
-        try {
-            static auto version_t = sdk::find_type_definition("via.version");
-            static std::string clean_version{};
-            static std::string engine_config{};
-            static auto tdb_version = sdk::RETypeDB::get()->get_version();
-
-            auto context = sdk::get_thread_context();
-            if (context != nullptr && version_t != nullptr) {
-                if (clean_version.empty()) {
-                    if (auto m = version_t->get_method("getPrettyVersionString"); m != nullptr) {
-                        clean_version = safe_get_version_string(m, context);
-                    }
-                }
-
-                if (engine_config.empty()) {
-                    if (auto m = version_t->get_method("getConfigName"); m != nullptr) {
-                        engine_config = safe_get_version_string(m, context);
-                    }
-                }
-            }
-
-            ImGui::Text("Engine information");
-            ImGui::Text(" Config: %s", engine_config.empty() ? "N/A" : engine_config.c_str());
-            ImGui::Text(" Version: %s", clean_version.empty() ? "N/A" : clean_version.c_str());
-            ImGui::Text(" TDB Version: %i", tdb_version);
-        } catch(...) {
-            ImGui::Text("Unable to determine engine version.");
+        auto tdb = sdk::RETypeDB::get();
+        if (tdb != nullptr) {
+            ImGui::Text("Engine Information");
+            ImGui::Text(" TypeDB Version: %i", tdb->get_version());
+            ImGui::Text(" Number of Types: %u", tdb->get_num_types());
+            ImGui::Text(" Number of Methods: %u", tdb->get_num_methods());
         }
-    } else {
-        ImGui::Text("Unable to determine engine version.");
     }
 
     ImGui::TreePop();
