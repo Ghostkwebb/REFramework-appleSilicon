@@ -313,7 +313,10 @@ static void ImGui_ImplWin32_UpdateMouseData(ImGuiIO& io)
     IM_ASSERT(bd->hWnd != 0);
 
     HWND focused_window = ::GetForegroundWindow();
-    const bool is_app_focused = (focused_window == bd->hWnd);
+    DWORD focused_pid = 0;
+    if (focused_window != nullptr)
+        ::GetWindowThreadProcessId(focused_window, &focused_pid);
+    const bool is_app_focused = (focused_window == bd->hWnd) || (focused_pid != 0 && focused_pid == ::GetCurrentProcessId());
     if (is_app_focused)
     {
         // (Optional) Set OS mouse position from Dear ImGui if requested (rarely used, only when io.ConfigNavMoveSetMousePos is enabled by user)

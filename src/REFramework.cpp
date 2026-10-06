@@ -877,6 +877,32 @@ void REFramework::run_imgui_frame(bool from_present) {
     
     ImGui_ImplWin32_NewFrame();
 
+    // On macOS / Wine / CrossOver, standard window messages (WM_MOUSEMOVE, WM_LBUTTONDOWN)
+    // are frequently routed directly to DirectInput/RawInput or Cocoa and bypass window_proc.
+    // Query physical cursor position and button states so ImGui always receives mouse interactions.
+    if (utility::DarwinHost::is_darwin() || m_draw_ui) {
+        POINT pt{};
+        if (::GetCursorPos(&pt)) {
+            HWND target_wnd = m_wnd;
+            if (target_wnd == nullptr || !::IsWindow(target_wnd)) {
+                target_wnd = ::GetForegroundWindow();
+            }
+            if (target_wnd != nullptr && ::ScreenToClient(target_wnd, &pt)) {
+                auto& io = ImGui::GetIO();
+                io.AddMousePosEvent(static_cast<float>(pt.x), static_cast<float>(pt.y));
+            }
+        }
+        if (m_draw_ui) {
+            auto& io = ImGui::GetIO();
+            const bool lbutton_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+            const bool rbutton_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+            const bool mbutton_down = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+            io.AddMouseButtonEvent(0, lbutton_down);
+            io.AddMouseButtonEvent(1, rbutton_down);
+            io.AddMouseButtonEvent(2, mbutton_down);
+        }
+    }
+
     // from_present is so we don't accidentally
     // run script/game code within the present thread.
     if (is_init_ok && !from_present) {
@@ -1872,12 +1898,30 @@ void REFramework::preserve_main_window_position(const char* window_name) {
     }
 
     // Ensure sensible minimum dimensions so the window can never be squashed into an invisible sliver
-    window_size.x = ImMax(window_size.x, 380.0f);
-    window_size.y = ImMax(window_size.y, 450.0f);
+    window_size.x = ImMax(window_size.x, 450.0f);
+    window_size.y = ImMax(window_size.y, 600.0f);
 
-    if (const auto* window = ImGui::FindWindowByName(window_name); window != nullptr) {
-        if (window->SizeFull.y < 200.0f || (!window->Collapsed && window->Size.y < 200.0f)) {
-            window_size.y = 550.0f;
+    if (auto* window = ImGui::FindWindowByName(window_name); window != nullptr) {
+        if (window->SizeFull.y < 350.0f || window->Size.y < 350.0f) {
+            window_size.x = ImMax(window_size.x, 450.0f);
+            window_size.y = 600.0f;
+            window->Size = window_size;
+            window->SizeFull = window_size;
+            restoring_scaled_size = true;
+        }
+        if (window->Collapsed) {
+            window->Collapsed = false;
+            window->WantCollapseToggle = false;
+            restoring_scaled_size = true;
+        }
+    } else if (auto* settings_ptr = ImGui::FindWindowSettingsByID(ImHashStr(window_name)); settings_ptr != nullptr) {
+        if (settings_ptr->Size.y < 350) {
+            settings_ptr->Size.y = 600;
+            window_size.y = 600.0f;
+            restoring_scaled_size = true;
+        }
+        if (settings_ptr->Collapsed) {
+            settings_ptr->Collapsed = false;
             restoring_scaled_size = true;
         }
     }
@@ -1912,13 +1956,18 @@ void REFramework::preserve_main_window_position(const char* window_name) {
         }
     } else {
         ImGui::SetNextWindowPos(position, ImGuiCond_Once);
+        ImGui::SetNextWindowSize(window_size, ImGuiCond_FirstUseEver);
     }
 }
 
 void REFramework::draw_ui() {
     std::lock_guard _{m_input_mutex};
 
-    ImGui::GetIO().MouseDrawCursor = m_draw_ui && REFrameworkConfig::get()->is_always_show_cursor();
+    if (utility::DarwinHost::is_darwin()) {
+        ImGui::GetIO().MouseDrawCursor = m_draw_ui;
+    } else {
+        ImGui::GetIO().MouseDrawCursor = m_draw_ui && REFrameworkConfig::get()->is_always_show_cursor();
+    }
     ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange; // causes bugs with the cursor
 
     if (!m_draw_ui) {
@@ -1956,7 +2005,7 @@ void REFramework::draw_ui() {
 
     auto& io = ImGui::GetIO();
 
-    if (io.WantCaptureKeyboard) {
+    if (io.WantCaptureKeyboard || (io.WantCaptureMouse && !m_ui_passthrough)) {
         m_dinput_hook->ignore_input();
     } else {
         m_dinput_hook->acknowledge_input();
@@ -1970,14 +2019,14 @@ void REFramework::draw_ui() {
 
     ImGui::SetNextWindowPos(ImVec2(50, 50), ImGuiCond_::ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(450, 600), ImGuiCond_::ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(350.0f, 250.0f), ImVec2(FLT_MAX, FLT_MAX));
-    ImGui::SetNextWindowCollapsed(false, ImGuiCond_::ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(350.0f, 350.0f), ImVec2(FLT_MAX, FLT_MAX));
+    ImGui::SetNextWindowCollapsed(false, ImGuiCond_::ImGuiCond_Always);
 
     ImGui::PushFont(m_default_font, m_font_size);
     static const auto REF_NAME = std::format("REFramework [{}+{}-{:.8}]###REFramework_MainWindow", REF_TAG, REF_COMMITS_PAST_TAG, REF_COMMIT_HASH);
     preserve_main_window_position(REF_NAME.c_str());
     bool is_open = true;
-    ImGui::Begin(REF_NAME.c_str(), &is_open);
+    ImGui::Begin(REF_NAME.c_str(), &is_open, ImGuiWindowFlags_NoCollapse);
     const auto* main_window = ImGui::GetCurrentWindow();
     if (utility::DarwinHost::is_darwin()) {
         ImGui::Text("Menu Key: F10 / Fn+F10 / ~ (Tilde)");
