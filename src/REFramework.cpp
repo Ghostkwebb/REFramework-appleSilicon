@@ -717,6 +717,12 @@ REFramework::REFramework(HMODULE reframework_module)
     // If all is good, we can immediately hook D3D12 very early
     // else, defer to the hook monitor if anything in the chain failed
     if (valid_render_frame) {
+        if (utility::DarwinHost::is_darwin()) {
+            // Under Wine / CrossOver on macOS, wait briefly for the game's initial window surface
+            // to finish presenting Frame 1, avoiding cross-thread mutex contention with winemac.drv
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+
         // We can guaranteed hook at this point
         std::scoped_lock _{m_hook_monitor_mutex};
         hook_d3d12();

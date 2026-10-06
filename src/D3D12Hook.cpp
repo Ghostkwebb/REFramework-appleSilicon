@@ -12,6 +12,7 @@
 #include <utility/Scan.hpp>
 #include <utility/ScopeGuard.hpp>
 #include <utility/DarwinHost.hpp>
+#include <sdk/Renderer.hpp>
 
 #include "REFramework.hpp"
 
@@ -38,6 +39,46 @@ static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
         is_direct = false;
     }
     return is_direct;
+}
+
+static IDXGISwapChain3* get_engine_swapchain() {
+    try {
+        auto output_layer = sdk::renderer::get_output_layer();
+        if (output_layer == nullptr || IsBadReadPtr(output_layer, sizeof(void*))) {
+            return nullptr;
+        }
+
+        auto present_state = output_layer->get_present_state();
+        if (present_state == nullptr || IsBadReadPtr(present_state, sizeof(void*))) {
+            return nullptr;
+        }
+
+        // In RE Engine DX12, OutputTargetStateDX12 holds swapchains[2] around offset 0xF0.
+        // We scan offsets up to 0x200 for a COM object implementing IDXGISwapChain3.
+        for (size_t offset = 0; offset <= 0x200 - sizeof(void*); offset += sizeof(void*)) {
+            const auto candidate_addr = (uintptr_t)present_state + offset;
+            if (IsBadReadPtr((void*)candidate_addr, sizeof(void*))) {
+                break;
+            }
+
+            void* candidate = *(void**)candidate_addr;
+            if (candidate != nullptr && !IsBadReadPtr(candidate, sizeof(void*))) {
+                void** vtable = *(void***)candidate;
+                if (vtable != nullptr && !IsBadReadPtr(vtable, sizeof(void*) * 10)) {
+                    IUnknown* unk = (IUnknown*)candidate;
+                    IDXGISwapChain3* sc = nullptr;
+                    if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
+                        spdlog::info("D3D12Hook: Found real engine swapchain at offset 0x{:X}: {:x}", offset, (uintptr_t)sc);
+                        return sc;
+                    }
+                }
+            }
+        }
+    } catch (...) {
+        spdlog::warn("D3D12Hook: Exception while searching for engine swapchain");
+    }
+
+    return nullptr;
 }
 
 void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, void* r8, void* r9) {
@@ -339,6 +380,24 @@ bool D3D12Hook::hook() {
         return false;
     }
 
+    s_factory_vtable = *(void***)factory;
+
+    // Hook CreateSwapChainForHwnd immediately on factory if not already hooked
+    if (s_create_swapchain_hook == nullptr && s_factory_vtable != nullptr) {
+        try {
+            if (!IsBadReadPtr(&s_factory_vtable[15], sizeof(void*)) && 
+                s_factory_vtable[15] != nullptr && 
+                !IsBadReadPtr(s_factory_vtable[15], sizeof(void*))) 
+            {
+                auto& create_swapchain_fn = s_factory_vtable[15]; // CreateSwapChainForHwnd
+                s_create_swapchain_hook = std::make_unique<PointerHook>(&create_swapchain_fn, &D3D12Hook::create_swapchain);
+                spdlog::info("D3D12Hook: Hooked CreateSwapChainForHwnd early");
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("D3D12Hook: Failed to hook CreateSwapChainForHwnd early: {}", e.what());
+        }
+    }
+
     D3D12_COMMAND_QUEUE_DESC queue_desc{};
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     queue_desc.Priority = 0;
@@ -355,104 +414,140 @@ bool D3D12Hook::hook() {
 
     s_command_queue_vtable = *(void***)command_queue;
 
-    spdlog::info("Creating dummy swapchain");
-
-    // used in CreateSwapChainForHwnd fallback
     HWND hwnd = 0;
     WNDCLASSEX wc{};
-
-    auto init_dummy_window = [&]() {
-        // fallback to CreateSwapChainForHwnd
-        wc.cbSize = sizeof(WNDCLASSEX);
-        wc.style = CS_HREDRAW | CS_VREDRAW;
-        wc.lpfnWndProc = DefWindowProc;
-        wc.cbClsExtra = 0;
-        wc.cbWndExtra = 0;
-        wc.hInstance = GetModuleHandle(NULL);
-        wc.hIcon = NULL;
-        wc.hCursor = NULL;
-        wc.hbrBackground = NULL;
-        wc.lpszMenuName = NULL;
-        wc.lpszClassName = TEXT("REFRAMEWORK_DX12_DUMMY");
-        wc.hIconSm = NULL;
-
-        ::RegisterClassEx(&wc);
-
-        hwnd = ::CreateWindow(wc.lpszClassName, TEXT("REF DX Dummy Window"), WS_OVERLAPPEDWINDOW, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
-
-        swap_chain_desc1.BufferCount = 3;
-        swap_chain_desc1.Width = 0;
-        swap_chain_desc1.Height = 0;
-        swap_chain_desc1.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        swap_chain_desc1.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
-        swap_chain_desc1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swap_chain_desc1.SampleDesc.Count = 1;
-        swap_chain_desc1.SampleDesc.Quality = 0;
-        swap_chain_desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        swap_chain_desc1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        swap_chain_desc1.Scaling = DXGI_SCALING_STRETCH;
-        swap_chain_desc1.Stereo = FALSE;
-    };
-
-    std::vector<std::function<bool ()>> swapchain_attempts{
-        // we call CreateSwapChainForComposition instead of CreateSwapChainForHwnd
-        // because some overlays will have hooks on CreateSwapChainForHwnd
-        // and all we're doing is creating a dummy swapchain
-        // we don't want to screw up the overlay
-        [&]() {
-            return !FAILED(factory->CreateSwapChainForComposition(command_queue, &swap_chain_desc1, nullptr, &swap_chain1));
-        },
-        [&]() {
-            init_dummy_window();
-
-            return !FAILED(factory->CreateSwapChainForHwnd(command_queue, hwnd, &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
-        },
-        [&]() {
-            return !FAILED(factory->CreateSwapChainForHwnd(command_queue, GetDesktopWindow(), &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
-        },
-    };
-
     bool any_succeed = false;
 
-    for (auto i = 0; i < swapchain_attempts.size(); i++) {
-        auto& attempt = swapchain_attempts[i];
-        
-        try {
-            spdlog::info("Trying swapchain attempt {}", i);
-
-            if (attempt()) {
-                spdlog::info("Created dummy swapchain on attempt {}", i);
-                any_succeed = true;
-                break;
-            }
-        } catch (std::exception& e) {
-            spdlog::error("Failed to create dummy swapchain on attempt {}: {}", i, e.what());
-        } catch(...) {
-            spdlog::error("Failed to create dummy swapchain on attempt {}: unknown exception", i);
+    // Check if the game engine already has a real swapchain (crucial on Darwin where creating
+    // an offscreen dummy window can cause an AB-BA deadlock with Wine's Cocoa window manager).
+    IDXGISwapChain3* engine_swapchain = get_engine_swapchain();
+    if (engine_swapchain != nullptr) {
+        swap_chain = engine_swapchain;
+        if (SUCCEEDED(swap_chain->QueryInterface(IID_PPV_ARGS(&swap_chain1)))) {
+            spdlog::info("D3D12Hook: Captured real engine swapchain directly, bypassing dummy window creation");
+            any_succeed = true;
+        } else {
+            swap_chain->Release();
+            swap_chain = nullptr;
         }
-
-        spdlog::error("Attempt {} failed", i);
     }
 
     if (!any_succeed) {
-        spdlog::error("Failed to create D3D12 Dummy Swap Chain");
+        spdlog::info("Creating dummy swapchain");
 
-        if (hwnd) {
-            ::DestroyWindow(hwnd);
+        auto init_dummy_window = [&]() {
+            // fallback to CreateSwapChainForHwnd
+            wc.cbSize = sizeof(WNDCLASSEX);
+            wc.style = CS_HREDRAW | CS_VREDRAW;
+            wc.lpfnWndProc = DefWindowProc;
+            wc.cbClsExtra = 0;
+            wc.cbWndExtra = 0;
+            wc.hInstance = GetModuleHandle(NULL);
+            wc.hIcon = NULL;
+            wc.hCursor = NULL;
+            wc.hbrBackground = NULL;
+            wc.lpszMenuName = NULL;
+            wc.lpszClassName = TEXT("REFRAMEWORK_DX12_DUMMY");
+            wc.hIconSm = NULL;
+
+            ::RegisterClassEx(&wc);
+
+            DWORD style = WS_OVERLAPPEDWINDOW;
+            if (utility::DarwinHost::is_darwin()) {
+                // WS_OVERLAPPEDWINDOW forces Wine's Mac driver to allocate a full Cocoa NSWindow
+                // on a background thread, causing an AB-BA deadlock with the game's GUI thread.
+                // Using WS_POPUP | WS_DISABLED creates a lightweight, headless window.
+                style = WS_POPUP | WS_DISABLED;
+            }
+
+            hwnd = ::CreateWindow(wc.lpszClassName, TEXT("REF DX Dummy Window"), style, 0, 0, 100, 100, NULL, NULL, wc.hInstance, NULL);
+
+            if (hwnd != nullptr) {
+                // Drain any pending creation messages from Wine's queue
+                MSG msg{};
+                while (PeekMessage(&msg, hwnd, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+            }
+
+            swap_chain_desc1.BufferCount = 3;
+            swap_chain_desc1.Width = 0;
+            swap_chain_desc1.Height = 0;
+            swap_chain_desc1.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            swap_chain_desc1.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+            swap_chain_desc1.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            swap_chain_desc1.SampleDesc.Count = 1;
+            swap_chain_desc1.SampleDesc.Quality = 0;
+            swap_chain_desc1.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            swap_chain_desc1.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+            swap_chain_desc1.Scaling = DXGI_SCALING_STRETCH;
+            swap_chain_desc1.Stereo = FALSE;
+        };
+
+        std::vector<std::function<bool ()>> swapchain_attempts{
+            // Attempt 0: Composition (cleanest on Windows, no HWND)
+            [&]() {
+                return !FAILED(factory->CreateSwapChainForComposition(command_queue, &swap_chain_desc1, nullptr, &swap_chain1));
+            },
+            // Attempt 1: Desktop Window (avoids new window creation on systems supporting it)
+            [&]() {
+                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, GetDesktopWindow(), &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
+            },
+            // Attempt 2: Lightweight dummy window
+            [&]() {
+                init_dummy_window();
+                if (hwnd == nullptr) return false;
+
+                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, hwnd, &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
+            },
+        };
+
+        for (auto i = 0; i < swapchain_attempts.size(); i++) {
+            auto& attempt = swapchain_attempts[i];
+            
+            try {
+                spdlog::info("Trying swapchain attempt {}", i);
+
+                if (attempt()) {
+                    spdlog::info("Created dummy swapchain on attempt {}", i);
+                    any_succeed = true;
+                    break;
+                }
+            } catch (std::exception& e) {
+                spdlog::error("Failed to create dummy swapchain on attempt {}: {}", i, e.what());
+            } catch(...) {
+                spdlog::error("Failed to create dummy swapchain on attempt {}: unknown exception", i);
+            }
+
+            spdlog::error("Attempt {} failed", i);
         }
 
-        if (wc.lpszClassName != nullptr) {
-            ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+        if (!any_succeed) {
+            spdlog::error("Failed to create D3D12 Dummy Swap Chain");
+
+            if (hwnd) {
+                ::DestroyWindow(hwnd);
+                MSG msg{};
+                while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessage(&msg);
+                }
+            }
+
+            if (wc.lpszClassName != nullptr) {
+                ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+            }
+
+            return false;
         }
 
-        return false;
-    }
+        spdlog::info("Querying dummy swapchain");
 
-    spdlog::info("Querying dummy swapchain");
-
-    if (FAILED(swap_chain1->QueryInterface(IID_PPV_ARGS(&swap_chain)))) {
-        spdlog::error("Failed to retrieve D3D12 DXGI SwapChain");
-        return false;
+        if (FAILED(swap_chain1->QueryInterface(IID_PPV_ARGS(&swap_chain)))) {
+            spdlog::error("Failed to retrieve D3D12 DXGI SwapChain");
+            return false;
+        }
     }
 
     try {
@@ -600,6 +695,11 @@ bool D3D12Hook::hook() {
 
     if (hwnd) {
         ::DestroyWindow(hwnd);
+        MSG msg{};
+        while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
     }
 
     if (wc.lpszClassName != nullptr) {
