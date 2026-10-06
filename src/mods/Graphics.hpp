@@ -185,7 +185,7 @@ private:
     
     const ModToggle::Ptr m_ultrawide_fix{ ModToggle::create(generate_name("UltrawideFix"), false) };
     const ModToggle::Ptr m_ultrawide_16_10_mode{ ModToggle::create(generate_name("Ultrawide16x10Mode"), false) };
-    const ModToggle::Ptr m_16_10_fit_mode{ ModToggle::create(generate_name("Ultrawide16x10FitMode"), false) };
+    const ModToggle::Ptr m_16_10_fit_mode{ ModToggle::create(generate_name("Ultrawide16x10FitMode"), true) };
     const ModToggle::Ptr m_macbook_notch_align_bottom{ ModToggle::create(generate_name("MacBookNotchAlignBottom"), false) };
 #if defined(REFRAMEWORK_UNIVERSAL) || defined(MHWILDS)
     const ModToggle::Ptr m_ultrawide_vertical_fov{ ModToggle::create(generate_name("UltrawideFixVerticalFOV_V2"), true) };

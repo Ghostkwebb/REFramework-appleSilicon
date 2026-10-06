@@ -704,12 +704,22 @@ bool Graphics::on_pre_gui_draw_element(REComponent* gui_element, void* primitive
 }
 
 void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
-    if ((sdk::GameIdentity::get().is_sf6() || sdk::GameIdentity::get().is_dmc5() || sdk::GameIdentity::get().is_dd2()) && m_ultrawide_fix->value()) {
+    if (m_ultrawide_fix->value()) {
         auto window = sdk::via::sv_window(scene_view);
 
         if (window != nullptr) {
-            sdk::via::window_borderless_w(window) = (float)sdk::via::window_width(window);
-            sdk::via::window_borderless_h(window) = (float)sdk::via::window_height(window);
+            const auto win_w = (float)sdk::via::window_width(window);
+            const auto win_h = (float)sdk::via::window_height(window);
+            if (win_w > 0.0f && win_h > 0.0f) {
+                sdk::via::window_borderless_w(window) = win_w;
+                sdk::via::window_borderless_h(window) = win_h;
+                if (sdk::GameIdentity::get().is_pragmata() || sdk::GameIdentity::get().is_dd2() || sdk::GameIdentity::get().is_re9()) {
+                    ((sdk::via::W::dd2*)window)->borderless_size.w = win_w;
+                    ((sdk::via::W::dd2*)window)->borderless_size.h = win_h;
+                    ((sdk::via::W::re9*)window)->borderless_size.w = win_w;
+                    ((sdk::via::W::re9*)window)->borderless_size.h = win_h;
+                }
+            }
         }
     }
 
@@ -717,10 +727,11 @@ void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
         return;
     }
 
-    if (!sdk::GameIdentity::get().is_dd2()) {
+    if (result != nullptr) {
         result[0] = (float)(*m_backbuffer_size)[0];
         result[1] = (float)(*m_backbuffer_size)[1];
-    } else {
+    }
+    if (sdk::GameIdentity::get().is_dd2() || sdk::GameIdentity::get().is_pragmata() || sdk::GameIdentity::get().is_re9()) {
         sdk::via::sv_size_w(scene_view) = (float)(*m_backbuffer_size)[0];
         sdk::via::sv_size_h(scene_view) = (float)(*m_backbuffer_size)[1];
     }
@@ -818,6 +829,23 @@ void Graphics::do_ultrawide_fix() {
 
     if (main_view == nullptr) {
         return;
+    }
+
+    // Keep window borderless size synced with window size to prevent mouse cursor clamping/offset
+    auto window = sdk::via::sv_window(main_view);
+    if (window != nullptr) {
+        const auto win_w = (float)sdk::via::window_width(window);
+        const auto win_h = (float)sdk::via::window_height(window);
+        if (win_w > 0.0f && win_h > 0.0f) {
+            sdk::via::window_borderless_w(window) = win_w;
+            sdk::via::window_borderless_h(window) = win_h;
+            if (sdk::GameIdentity::get().is_pragmata() || sdk::GameIdentity::get().is_dd2() || sdk::GameIdentity::get().is_re9()) {
+                ((sdk::via::W::dd2*)window)->borderless_size.w = win_w;
+                ((sdk::via::W::dd2*)window)->borderless_size.h = win_h;
+                ((sdk::via::W::re9*)window)->borderless_size.w = win_w;
+                ((sdk::via::W::re9*)window)->borderless_size.h = win_h;
+            }
+        }
     }
 
     // This disables any kind of pillarboxing and letterboxing.
