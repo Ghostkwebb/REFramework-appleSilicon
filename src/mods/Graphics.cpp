@@ -273,12 +273,23 @@ void Graphics::on_draw_ui() {
 
     ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
     if (ImGui::TreeNode("Ultrawide/FOV Options")) {
-        if (m_ultrawide_fix->draw("Ultrawide/FOV/Aspect Ratio Fix") && m_ultrawide_fix->value() == false) {
-            do_ultrawide_fov_restore(true);
+        if (m_ultrawide_fix->draw("Ultrawide/FOV/Aspect Ratio Fix")) {
+            m_last_applied_display_type = std::nullopt;
+            if (m_ultrawide_fix->value() == false) {
+                do_ultrawide_fov_restore(true);
+                auto main_view = sdk::get_main_view();
+                static auto via_scene_view = sdk::find_type_definition("via.SceneView");
+                static auto set_display_type_method = via_scene_view != nullptr ? via_scene_view->get_method("set_DisplayType") : nullptr;
+                if (main_view != nullptr && set_display_type_method != nullptr) {
+                    set_display_type_method->call(sdk::get_thread_context(), main_view, via::DisplayType::Uniform16x9);
+                }
+            }
         }
 
         if (m_ultrawide_fix->value()) {
-            m_ultrawide_16_10_mode->draw("16:10 Mode: Use Black Bars (maintain 16:9)");
+            if (m_ultrawide_16_10_mode->draw("16:10 Mode: Use Black Bars (maintain 16:9)")) {
+                m_last_applied_display_type = std::nullopt;
+            }
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("On a 16:10 display, keeps the game at 16:9 with black bars instead of\n"
                                   "stretching to fill the screen. Prevents UI element misalignment.");
@@ -587,9 +598,9 @@ bool Graphics::on_pre_gui_draw_element(REComponent* gui_element, void* primitive
     }
 
     auto game_object = gui_element->get_game_object();
-    static auto letter_box_behavior_t = sdk::find_type_definition("app.LetterBoxBehavior");
+    static auto letter_box_behavior_t = sdk::GameIdentity::get().is_kunitsu() ? sdk::find_type_definition("app.LetterBoxBehavior") : nullptr;
     static auto letter_box_behavior_retype = letter_box_behavior_t != nullptr ? letter_box_behavior_t->get_type() : nullptr;
-    static auto csmaskui_t = sdk::find_type_definition("app.solid.gui.CSMaskUI");
+    static auto csmaskui_t = sdk::GameIdentity::get().is_drdr() ? sdk::find_type_definition("app.solid.gui.CSMaskUI") : nullptr;
     static auto csmaskui_retype = csmaskui_t != nullptr ? csmaskui_t->get_type() : nullptr;
 
     if (game_object != nullptr && game_object->get_transform() != nullptr) {
@@ -672,7 +683,7 @@ bool Graphics::on_pre_gui_draw_element(REComponent* gui_element, void* primitive
 }
 
 void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
-    if ((sdk::GameIdentity::get().is_sf6() || sdk::GameIdentity::get().is_dmc5() || sdk::GameIdentity::get().tdb_ver() >= 73) && m_ultrawide_fix->value()) {
+    if ((sdk::GameIdentity::get().is_sf6() || sdk::GameIdentity::get().is_dmc5() || sdk::GameIdentity::get().is_dd2()) && m_ultrawide_fix->value()) {
         auto window = sdk::via::sv_window(scene_view);
 
         if (window != nullptr) {
@@ -685,7 +696,7 @@ void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
         return;
     }
 
-    if (sdk::GameIdentity::get().tdb_ver() < 73) {
+    if (!sdk::GameIdentity::get().is_dd2()) {
         result[0] = (float)(*m_backbuffer_size)[0];
         result[1] = (float)(*m_backbuffer_size)[1];
     } else {
@@ -763,7 +774,7 @@ void Graphics::do_ultrawide_fix() {
         if (!m_ultrawide_16_10_mode->value() || !m_backbuffer_size.has_value()) return false;
         const auto& size = m_backbuffer_size.value();
         const double ratio = static_cast<double>(size[0]) / static_cast<double>(size[1]);
-        return glm::abs(ratio - 16.0 / 10.0) < 0.01;
+        return (ratio >= 1.50 && ratio <= 1.65);
     }();
 
     if (!use_16_10_letterbox) {
@@ -780,7 +791,7 @@ void Graphics::do_ultrawide_fix() {
     }
 
     static auto via_scene_view = sdk::find_type_definition("via.SceneView");
-    static auto set_display_type_method = via_scene_view->get_method("set_DisplayType");
+    static auto set_display_type_method = via_scene_view != nullptr ? via_scene_view->get_method("set_DisplayType") : nullptr;
 
     auto main_view = sdk::get_main_view();
 
@@ -791,38 +802,44 @@ void Graphics::do_ultrawide_fix() {
     // This disables any kind of pillarboxing and letterboxing.
     // This cannot be directly restored once applied.
     if (set_display_type_method != nullptr) {
-        auto display_type = via::DisplayType::Fit;
+        auto display_type = via::DisplayType::Uniform16x9;
         auto graphics = Graphics::get();
 
         if (graphics->m_backbuffer_size.has_value()) {
             const auto& size = graphics->m_backbuffer_size.value();
             const double ratio = static_cast<double>(size[0]) / static_cast<double>(size[1]);
-            constexpr double epsilon = 0.01;
+            constexpr double epsilon = 0.05;
             constexpr double _4_3   = 4.0 / 3.0;
             constexpr double _16_9  = 16.0 / 9.0;
-            constexpr double _16_10 = 16.0 / 10.0;
             constexpr double _21_9  = 21.0 / 9.0;
             constexpr double _32_9  = 32.0 / 9.0;
             constexpr double _48_9  = 48.0 / 9.0;
             
             if (glm::abs(ratio - _4_3) < epsilon) {
                 display_type = via::DisplayType::Uniform4x3;
+            } else if (ratio >= 1.50 && ratio <= 1.65) {
+                // 16:10 family (including MacBook screens: 1728x1117, 3024x1964, 3456x2234, etc.)
+                display_type = use_16_10_letterbox ? via::DisplayType::Uniform16x9 : via::DisplayType::Uniform16x10;
             } else if (glm::abs(ratio - _16_9) < epsilon) {
                 display_type = via::DisplayType::Uniform16x9;
-            } else if (glm::abs(ratio - _16_10) < epsilon) {
-                // In 16:10 letterbox mode, constrain content to 16:9 with black bars
-                // instead of stretching to fill the 16:10 screen.
-                display_type = use_16_10_letterbox ? via::DisplayType::Uniform16x9 : via::DisplayType::Uniform16x10;
-            } else if (glm::abs(ratio - _21_9) < epsilon) {
+            } else if (glm::abs(ratio - _21_9) < 0.08) {
                 display_type = via::DisplayType::Uniform21x9;
-            } else if (glm::abs(ratio - _32_9) < epsilon) {
+            } else if (glm::abs(ratio - _32_9) < 0.08) {
                 display_type = via::DisplayType::Uniform32x9;
-            } else if (glm::abs(ratio - _48_9) < epsilon) {
+            } else if (glm::abs(ratio - _48_9) < 0.08) {
                 display_type = via::DisplayType::Uniform48x9;
+            } else if (ratio > _16_9) {
+                display_type = via::DisplayType::Fit;
+            } else {
+                display_type = via::DisplayType::Uniform16x9;
             }
         }
 
-        set_display_type_method->call(sdk::get_thread_context(), main_view, display_type);
+        if ((uintptr_t)main_view != m_last_applied_view || !m_last_applied_display_type.has_value() || *m_last_applied_display_type != (int32_t)display_type) {
+            set_display_type_method->call(sdk::get_thread_context(), main_view, display_type);
+            m_last_applied_view = (uintptr_t)main_view;
+            m_last_applied_display_type = (int32_t)display_type;
+        }
     }
 }
 
@@ -852,8 +869,10 @@ void Graphics::do_ultrawide_fov_restore(bool force) {
     if (set_fov_method != nullptr) {
         for (auto it : m_fov_map) {
             auto camera = it.first;
-            set_fov_method->call(sdk::get_thread_context(), camera, m_fov_map[camera]);
-            camera->release();
+            if (camera != nullptr) {
+                set_fov_method->call(sdk::get_thread_context(), camera, m_fov_map[camera]);
+                camera->release();
+            }
         }
         m_fov_map.clear();
     }
@@ -861,8 +880,10 @@ void Graphics::do_ultrawide_fov_restore(bool force) {
     if (set_vertical_enable_method != nullptr) {
         for (auto it : m_vertical_fov_map) {
             auto camera = it.first;
-            set_vertical_enable_method->call(sdk::get_thread_context(), camera, m_vertical_fov_map[camera]);
-            camera->release();
+            if (camera != nullptr) {
+                set_vertical_enable_method->call(sdk::get_thread_context(), camera, m_vertical_fov_map[camera]);
+                camera->release();
+            }
         }
         m_vertical_fov_map.clear();
     }

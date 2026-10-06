@@ -192,6 +192,9 @@ private:
     const ModToggle::Ptr m_ultrawide_vertical_fov{ ModToggle::create(generate_name("UltrawideFixVerticalFOV_V2"), false) };
 #endif
 
+    std::optional<int32_t> m_last_applied_display_type{};
+    uintptr_t m_last_applied_view{0};
+
     // There is a trend with newer games where there actually is Ultrawide support, so we don't want to actually touch the FOV by default
     // And sometimes messing with the FOV causes permanent issues with the UI, so don't touch it by default
 #ifdef REFRAMEWORK_UNIVERSAL
