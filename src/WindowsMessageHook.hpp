@@ -13,16 +13,6 @@
 class WindowsMessageHook {
 public:
     std::function<bool(HWND, UINT, WPARAM, LPARAM)> on_message;
-    std::function<LPARAM(HWND, UINT, WPARAM, LPARAM)> transform_game_lparam;
-    std::function<void(HWND, LPPOINT)> transform_client_point;
-
-    static void set_bypass_mouse_transform(bool bypass);
-    static bool is_bypass_mouse_transform();
-
-    struct ScopedBypass {
-        ScopedBypass() { WindowsMessageHook::set_bypass_mouse_transform(true); }
-        ~ScopedBypass() { WindowsMessageHook::set_bypass_mouse_transform(false); }
-    };
 
     WindowsMessageHook() = delete;
     WindowsMessageHook(const WindowsMessageHook& other) = delete;

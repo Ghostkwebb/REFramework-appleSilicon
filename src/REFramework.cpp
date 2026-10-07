@@ -37,7 +37,6 @@ extern "C" {
 #include "utility/DarwinHost.hpp"
 
 #include "Mods.hpp"
-#include "mods/Graphics.hpp"
 #include "mods/FaultyFileDetector.hpp"
 #include "mods/LooseFileLoader.hpp"
 #include "mods/LooseTextureLoader.hpp"
@@ -870,7 +869,6 @@ REFramework::~REFramework() {
 
 void REFramework::run_imgui_frame(bool from_present) {
     std::scoped_lock _{ m_imgui_mtx };
-    WindowsMessageHook::ScopedBypass bypass{};
 
     m_has_frame = false;
 
@@ -1305,121 +1303,6 @@ bool is_device_controller(PDEV_BROADCAST_HDR hdr, WPARAM w_param) {
     spdlog::info("Event {:x}: No relevant device detected", w_param);
 
     return false;
-}
-
-bool REFramework::should_apply_notch_mouse_transform(int w, int h) const {
-    if (w <= 0 || h <= 0) {
-        return false;
-    }
-    if (!utility::DarwinHost::is_darwin() && !utility::DarwinHost::is_wine()) {
-        return false;
-    }
-
-    auto& graphics = Graphics::get();
-    if (!graphics || !graphics->is_16_10_fit_mode()) {
-        return false;
-    }
-
-    const double ratio = static_cast<double>(w) / static_cast<double>(h);
-    return (ratio >= 1.50 && ratio <= 1.58);
-}
-
-LPARAM REFramework::transform_game_lparam(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
-    switch (message) {
-    case WM_MOUSEMOVE:
-    case WM_LBUTTONDOWN:
-    case WM_LBUTTONUP:
-    case WM_LBUTTONDBLCLK:
-    case WM_RBUTTONDOWN:
-    case WM_RBUTTONUP:
-    case WM_RBUTTONDBLCLK:
-    case WM_MBUTTONDOWN:
-    case WM_MBUTTONUP:
-    case WM_MBUTTONDBLCLK:
-    case WM_XBUTTONDOWN:
-    case WM_XBUTTONUP:
-    case WM_XBUTTONDBLCLK:
-    case WM_MOUSEHOVER:
-        break;
-    default:
-        return l_param;
-    }
-
-    HWND target_wnd = (wnd != nullptr && IsWindow(wnd)) ? wnd : m_wnd;
-    if (target_wnd == nullptr || !IsWindow(target_wnd)) {
-        return l_param;
-    }
-
-    RECT rect{};
-    if (!GetClientRect(target_wnd, &rect)) {
-        return l_param;
-    }
-    const int w = rect.right - rect.left;
-    const int h = rect.bottom - rect.top;
-    if (w <= 0 || h <= 0) {
-        return l_param;
-    }
-
-    if (!should_apply_notch_mouse_transform(w, h)) {
-        return l_param;
-    }
-
-    const short x = static_cast<short>(LOWORD(l_param));
-    const short y = static_cast<short>(HIWORD(l_param));
-
-    // Only transform coordinates within the window height bounds
-    if (y < 0 || y > h) {
-        return l_param;
-    }
-
-    const double usable_h = std::round(static_cast<double>(w) / 1.6);
-    const double delta = (static_cast<double>(h) - usable_h) / 2.0;
-
-    const double orig_y = static_cast<double>(y);
-    const double transformed_y = (orig_y * usable_h / static_cast<double>(h)) + delta;
-    const short new_y = static_cast<short>(std::clamp(
-        static_cast<int>(std::round(transformed_y)),
-        0,
-        h
-    ));
-
-    return MAKELPARAM(x, new_y);
-}
-
-void REFramework::transform_client_point(HWND wnd, LPPOINT pt) {
-    if (pt == nullptr) {
-        return;
-    }
-
-    HWND target_wnd = (wnd != nullptr && IsWindow(wnd)) ? wnd : m_wnd;
-    if (target_wnd == nullptr || !IsWindow(target_wnd)) {
-        return;
-    }
-
-    RECT rect{};
-    if (!GetClientRect(target_wnd, &rect)) {
-        return;
-    }
-    const int w = rect.right - rect.left;
-    const int h = rect.bottom - rect.top;
-    if (w <= 0 || h <= 0) {
-        return;
-    }
-
-    if (!should_apply_notch_mouse_transform(w, h)) {
-        return;
-    }
-
-    if (pt->y < 0 || pt->y > h) {
-        return;
-    }
-
-    const double usable_h = std::round(static_cast<double>(w) / 1.6);
-    const double delta = (static_cast<double>(h) - usable_h) / 2.0;
-
-    const double orig_y = static_cast<double>(pt->y);
-    const double transformed_y = (orig_y * usable_h / static_cast<double>(h)) + delta;
-    pt->y = std::clamp(static_cast<LONG>(std::round(transformed_y)), 0L, static_cast<LONG>(h));
 }
 
 bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
@@ -2690,12 +2573,6 @@ bool REFramework::initialize_windows_message_hook() {
         m_windows_message_hook = std::make_unique<WindowsMessageHook>(m_wnd);
         m_windows_message_hook->on_message = [this](auto wnd, auto msg, auto w_param, auto l_param) {
             return on_message(wnd, msg, w_param, l_param);
-        };
-        m_windows_message_hook->transform_game_lparam = [this](auto wnd, auto msg, auto w_param, auto l_param) {
-            return transform_game_lparam(wnd, msg, w_param, l_param);
-        };
-        m_windows_message_hook->transform_client_point = [this](auto wnd, auto pt) {
-            transform_client_point(wnd, pt);
         };
 
         m_message_hook_requested = false;
