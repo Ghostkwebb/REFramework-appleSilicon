@@ -75,13 +75,9 @@ If you run Windows Steam games natively on macOS using the **NotProton** compati
 * **GUI Hider/Disabler** (All games)
 
 ## Included Fixes
-* **Apple Silicon / Wine / D3DMetal**:
-  * 16:10 MacBook Retina display detection and viewport centering
-  * 1:1 Mouse coordinate alignment under Wine translation
-  * Cocoa message pump deadlock prevention during swapchain presentation
-* **Game-Specific**:
-  * RE8 Startup Crash & Stutters (killing enemies, taking damage, etc...)
-  * MHRise/RE8 crashes related to third party DLLs
+* RE8 Startup Crash
+* RE8 Stutters (killing enemies, taking damage, etc...)
+* MHRise/RE8 crashes related to third party DLLs
 
 ## Included Tools (Developer Mode)
 * Game Objects Display
