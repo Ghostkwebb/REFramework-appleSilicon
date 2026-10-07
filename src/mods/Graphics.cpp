@@ -302,17 +302,9 @@ void Graphics::on_draw_ui() {
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("On 16:10 displays (including MacBook screens 1728x1117, 1512x982, Retina),\n"
-                                      "stretches to fill the entire height, completely removing the bottom black bar.\n"
-                                      "Note: RE Engine's 2D UI hit-testing does not scale with Fit mode, which causes\n"
-                                      "a mouse cursor offset in menus (best used with controller / gamepad).");
-                }
-
-                if (m_macbook_notch_align_bottom->draw("MacBook: Align Window Below Notch (Flush Bottom)")) {
-                    m_last_applied_display_type = std::nullopt;
-                }
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("On MacBooks with a camera notch, repositions the window to start immediately\n"
-                                      "below the notch and end flush at the screen bottom, ensuring pure 16:10 with no notch intrusion.");
+                                      "fills the entire height, completely removing the bottom black bar.\n"
+                                      "REFramework automatically transforms mouse coordinates so menu interactions\n"
+                                      "align 1:1 with buttons without vertical offset or boundary clamping.");
                 }
             }
 
@@ -894,45 +886,6 @@ void Graphics::do_ultrawide_fix() {
             set_display_type_method->call(sdk::get_thread_context(), main_view, display_type);
             m_last_applied_view = (uintptr_t)main_view;
             m_last_applied_display_type = (int32_t)display_type;
-        }
-
-        // Optional MacBook camera notch alignment: shift window below notch and flush with bottom
-        static bool s_notch_aligned = false;
-        if (m_macbook_notch_align_bottom->value()) {
-            HWND hwnd = g_framework->get_window();
-            if (hwnd != nullptr && IsWindow(hwnd)) {
-                RECT rect{};
-                if (GetClientRect(hwnd, &rect) && rect.right > 0 && rect.bottom > 0) {
-                    const int w = rect.right - rect.left;
-                    const int h = rect.bottom - rect.top;
-                    const double r = static_cast<double>(w) / static_cast<double>(h);
-                    // MacBook notch geometry signature: ratio is ~1.538 - 1.547
-                    if (r >= 1.50 && r <= 1.58) {
-                        const int usable_h = static_cast<int>(std::round(static_cast<double>(w) / 1.6));
-                        const int notch_h = h - usable_h;
-                        if (notch_h > 0 && notch_h <= 120) {
-                            RECT win_rect{};
-                            GetWindowRect(hwnd, &win_rect);
-                            if (win_rect.top != notch_h || (win_rect.bottom - win_rect.top) != usable_h) {
-                                SetWindowPos(hwnd, nullptr, win_rect.left, notch_h, w, usable_h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
-                                s_notch_aligned = true;
-                            }
-                        }
-                    }
-                }
-            }
-        } else if (s_notch_aligned) {
-            HWND hwnd = g_framework->get_window();
-            if (hwnd != nullptr && IsWindow(hwnd)) {
-                RECT win_rect{};
-                GetWindowRect(hwnd, &win_rect);
-                if (win_rect.top > 0) {
-                    const int w = win_rect.right - win_rect.left;
-                    const int full_h = (win_rect.bottom - win_rect.top) + win_rect.top;
-                    SetWindowPos(hwnd, nullptr, win_rect.left, 0, w, full_h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS);
-                }
-            }
-            s_notch_aligned = false;
         }
     }
 }

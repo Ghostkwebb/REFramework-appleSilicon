@@ -85,6 +85,10 @@ public:
     bool on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param);
     void on_direct_input_keys(const std::array<uint8_t, 256>& keys);
 
+    bool should_apply_notch_mouse_transform(int w, int h) const;
+    LPARAM transform_game_lparam(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param);
+    void transform_client_point(HWND wnd, LPPOINT pt);
+
     static inline bool s_fallback_appdata{false};
     static inline bool s_checked_file_permissions{false};
     static std::filesystem::path get_persistent_dir();

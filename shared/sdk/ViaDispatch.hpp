@@ -140,8 +140,32 @@ inline uint32_t& window_height(void* w) { VIA_WIN_FIELD(w, height); }
 inline float& window_borderless_w(void* w) { VIA_WIN_BORDERLESS(w, w); }
 inline float& window_borderless_h(void* w) { VIA_WIN_BORDERLESS(w, h); }
 
+#define VIA_WIN_CURSOR_POS(w, sub) \
+    switch (sdk::GameIdentity::get().game()) { \
+    case sdk::GameID::RE7:                                                     \
+    case sdk::GameID::RE3:                                                     \
+    case sdk::GameID::RE2:     return ((W::re2*)(w))->cursor_pos.sub;     \
+    case sdk::GameID::DMC5:    return ((W::re3_tdb67*)(w))->cursor_pos.sub;     \
+    case sdk::GameID::MHRISE:  return ((W::mhrise*)(w))->cursor_pos.sub;  \
+    case sdk::GameID::GGR:                                           \
+    case sdk::GameID::RE8:     return ((W::re8*)(w))->cursor_pos.sub;     \
+    case sdk::GameID::RE4:     return ((W::re4*)(w))->cursor_pos.sub;     \
+    case sdk::GameID::SF6:     return ((W::sf6*)(w))->cursor_pos.sub;     \
+    case sdk::GameID::GS456:                                         \
+    case sdk::GameID::KUNITSU:                                       \
+    case sdk::GameID::ONIMUSHA2:                                     \
+    case sdk::GameID::DRDR:                                          \
+    case sdk::GameID::DD2:                                                     \
+    case sdk::GameID::MHSTORIES3: return ((W::dd2*)(w))->cursor_pos.sub;     \
+    default:                   return ((W::re9*)(w))->cursor_pos.sub;     \
+    }
+
+inline float& window_cursor_pos_x(void* w) { VIA_WIN_CURSOR_POS(w, x); }
+inline float& window_cursor_pos_y(void* w) { VIA_WIN_CURSOR_POS(w, y); }
+
 #undef VIA_WIN_FIELD
 #undef VIA_WIN_BORDERLESS
+#undef VIA_WIN_CURSOR_POS
 
 // ── via::SceneView accessors ────────────────────────────────────────────────
 

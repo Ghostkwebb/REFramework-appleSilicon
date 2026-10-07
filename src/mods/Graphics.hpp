@@ -42,6 +42,10 @@ public:
         return m_ultrawide_fix->value();
     }
 
+    bool is_16_10_fit_mode() const {
+        return m_16_10_fit_mode->value();
+    }
+
 #if defined(REFRAMEWORK_UNIVERSAL) || defined(MHWILDS)
     uint32_t get_mhwilds_ultrawide_correction_value() const {
         return (uint32_t)m_ultrawide_ui_correction->value();
@@ -186,7 +190,6 @@ private:
     const ModToggle::Ptr m_ultrawide_fix{ ModToggle::create(generate_name("UltrawideFix"), false) };
     const ModToggle::Ptr m_ultrawide_16_10_mode{ ModToggle::create(generate_name("Ultrawide16x10Mode"), false) };
     const ModToggle::Ptr m_16_10_fit_mode{ ModToggle::create(generate_name("Ultrawide16x10FitMode"), true) };
-    const ModToggle::Ptr m_macbook_notch_align_bottom{ ModToggle::create(generate_name("MacBookNotchAlignBottom"), false) };
 #if defined(REFRAMEWORK_UNIVERSAL) || defined(MHWILDS)
     const ModToggle::Ptr m_ultrawide_vertical_fov{ ModToggle::create(generate_name("UltrawideFixVerticalFOV_V2"), true) };
     const ModSlider::Ptr m_ultrawide_ui_correction{ ModSlider::create(generate_name("UltrawideUICorrection"), 0.0f, 100.0f, 100.0f) };
@@ -314,7 +317,6 @@ private:
         *m_ultrawide_fix,
         *m_ultrawide_16_10_mode,
         *m_16_10_fit_mode,
-        *m_macbook_notch_align_bottom,
         *m_ultrawide_vertical_fov,
         *m_ultrawide_custom_fov,
         *m_ultrawide_constrain_ui,

@@ -2,6 +2,7 @@
 #include <vector>
 
 #include <spdlog/spdlog.h>
+#include <safetyhook.hpp>
 
 #include "utility/Thread.hpp"
 
@@ -11,6 +12,35 @@ using namespace std;
 
 static WindowsMessageHook* g_windows_message_hook{ nullptr };
 std::recursive_mutex g_proc_mutex{};
+
+static thread_local bool s_bypass_mouse_transform = false;
+
+void WindowsMessageHook::set_bypass_mouse_transform(bool bypass) {
+    s_bypass_mouse_transform = bypass;
+}
+
+bool WindowsMessageHook::is_bypass_mouse_transform() {
+    return s_bypass_mouse_transform;
+}
+
+static inline safetyhook::InlineHook s_screen_to_client_hook{};
+
+static BOOL WINAPI hooked_ScreenToClient(HWND hWnd, LPPOINT lpPoint) {
+    BOOL result = s_screen_to_client_hook.call<BOOL>(hWnd, lpPoint);
+    if (!result || lpPoint == nullptr) {
+        return result;
+    }
+
+    if (WindowsMessageHook::is_bypass_mouse_transform()) {
+        return result;
+    }
+
+    if (g_windows_message_hook != nullptr && g_windows_message_hook->transform_client_point) {
+        g_windows_message_hook->transform_client_point(hWnd, lpPoint);
+    }
+
+    return result;
+}
 
 LRESULT WINAPI window_proc(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
     std::lock_guard _{ g_proc_mutex };
@@ -34,12 +64,17 @@ LRESULT WINAPI window_proc(HWND wnd, UINT message, WPARAM w_param, LPARAM l_para
         }
     }
 
-    if (original_proc != nullptr) {
-        // Call the original message procedure.
-        return CallWindowProc(original_proc, wnd, message, w_param, l_param);
+    LPARAM game_l_param = l_param;
+    if (g_windows_message_hook->transform_game_lparam) {
+        game_l_param = g_windows_message_hook->transform_game_lparam(wnd, message, w_param, l_param);
     }
 
-    return DefWindowProc(wnd, message, w_param, l_param);
+    if (original_proc != nullptr) {
+        // Call the original message procedure.
+        return CallWindowProc(original_proc, wnd, message, w_param, game_l_param);
+    }
+
+    return DefWindowProc(wnd, message, w_param, game_l_param);
 }
 
 bool WindowsMessageHook::hook_window(HWND wnd) {
@@ -121,6 +156,21 @@ WindowsMessageHook::WindowsMessageHook(HWND wnd)
     }
 
     spdlog::info("Hooked Windows message handlers (total {} windows hooked)", m_original_procs.size());
+
+    if (!s_screen_to_client_hook) {
+        const auto user32 = GetModuleHandleA("user32.dll");
+        if (user32 != nullptr) {
+            const auto screen_to_client_addr = GetProcAddress(user32, "ScreenToClient");
+            if (screen_to_client_addr != nullptr) {
+                s_screen_to_client_hook = safetyhook::create_inline(screen_to_client_addr, (void*)hooked_ScreenToClient);
+                if (s_screen_to_client_hook) {
+                    spdlog::info("WindowsMessageHook: Hooked ScreenToClient at {:p}", (void*)screen_to_client_addr);
+                } else {
+                    spdlog::warn("WindowsMessageHook: Failed to hook ScreenToClient");
+                }
+            }
+        }
+    }
 }
 
 WindowsMessageHook::~WindowsMessageHook() {
