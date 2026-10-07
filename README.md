@@ -6,15 +6,6 @@ Based on and upstream-compatible with [praydog's REFramework](https://github.com
 
 ---
 
-## Apple Silicon & macOS Highlights
-
-* **Native 16:10 MacBook Display Support**: Native aspect ratio handling for MacBook Liquid Retina screens (1728×1117, 1512×982, 3024×1964, 3456×2234, etc.) utilizing `Uniform16x10` framing without bottom black bars or letterboxing distortion.
-* **1:1 Pixel-Perfect Mouse Tracking**: Eliminates the mouse displacement bug in menus and inventories under Wine/CrossOver/D3DMetal by synchronizing borderless window metrics through engine dispatch.
-* **Wine / D3DMetal / DXMT Stability**: Deadlock-free window and presentation handling designed specifically to prevent Cocoa event loop stalls and swapchain freezes in CrossOver and Wine.
-* **Rosetta 2 Optimized**: Fully tested and compatible under macOS Rosetta 2 x86_64 translation.
-
----
-
 ## Installation & Setup
 
 Download the latest build from the [Releases](https://github.com/Ghostkwebb/REFramework-appleSilicon/releases) page (or compile using the GitHub Actions workflow).
