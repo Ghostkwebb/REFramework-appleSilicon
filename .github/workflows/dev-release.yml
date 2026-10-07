@@ -92,7 +92,7 @@ jobs:
   nightly-push:
     runs-on: windows-latest
     needs: [dev-release, csharp-release]
-    if: github.ref == 'refs/heads/master'
+    if: github.repository == 'praydog/reframework' && github.ref == 'refs/heads/master'
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
