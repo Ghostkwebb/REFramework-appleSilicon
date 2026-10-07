@@ -50,21 +50,6 @@ If you run Windows Steam games natively on macOS using the **NotProton** compati
 
 ---
 
-### 4. Linux / Steam Deck (Proton)
-1. Extract `dinput8.dll` into your game directory.
-2. In Steam, right-click the game $\to$ **Properties...** $\to$ **General** $\to$ **Launch Options**:
-   ```sh
-   WINEDLLOVERRIDES="dinput8.dll=n,b" %command%
-   ```
-
----
-
-### 5. Windows (Native)
-* Extract `dinput8.dll` into your game directory.
-* For VR: Install SteamVR/OpenXR and extract the full zip archive into the game folder. ([VR Troubleshooting/FAQ](https://github.com/praydog/REFramework/wiki/VR-Troubleshooting)).
-
----
-
 ## In-Game Usage
 
 * Press <kbd>Insert</kbd> or <kbd>F10</kbd> to open/close the REFramework in-game overlay menu.
