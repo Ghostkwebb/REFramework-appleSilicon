@@ -284,16 +284,6 @@ void Graphics::on_draw_ui() {
                 if (main_view != nullptr && set_display_type_method != nullptr) {
                     set_display_type_method->call(sdk::get_thread_context(), main_view, via::DisplayType::Uniform16x9);
                 }
-
-                HWND hwnd = g_framework->get_window();
-                if (hwnd != nullptr && IsWindow(hwnd)) {
-                    const int screen_w = GetSystemMetrics(SM_CXSCREEN);
-                    const int screen_h = GetSystemMetrics(SM_CYSCREEN);
-                    if (screen_w > 0 && screen_h > 0) {
-                        SetWindowPos(hwnd, nullptr, 0, 0, screen_w, screen_h,
-                                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
-                    }
-                }
             }
         }
 
@@ -306,14 +296,6 @@ void Graphics::on_draw_ui() {
                                   "stretching to fill the screen. Prevents UI element misalignment.");
             }
 
-            if (!m_ultrawide_16_10_mode->value()) {
-                m_macbook_notch_align->draw("MacBook: Align Window Below Notch (Flush Bottom)");
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("On MacBooks with a camera notch (e.g. 1728x1117, 1512x982), positions the\n"
-                                      "borderless window flush below the notch to fill the remaining screen (16:10).\n"
-                                      "Eliminates the bottom black bar and notch intrusion while maintaining 1:1 pixel-perfect mouse alignment.");
-                }
-            }
 
             if (!sdk::GameIdentity::get().is_mhwilds()) {
                 m_ultrawide_constrain_ui->draw("Ultrawide: Constrain UI to 16:9");
@@ -893,45 +875,22 @@ void Graphics::do_ultrawide_fix() {
             m_last_applied_display_type = (int32_t)display_type;
         }
 
-        // Align borderless window below camera notch on MacBook Liquid Retina displays
-        static bool s_notch_was_aligned = false;
-        if (m_macbook_notch_align->value()) {
+        static std::once_flag s_reset_window_flag;
+        std::call_once(s_reset_window_flag, []() {
             HWND hwnd = g_framework->get_window();
             if (hwnd != nullptr && IsWindow(hwnd)) {
-                const int screen_w = GetSystemMetrics(SM_CXSCREEN);
-                const int screen_h = GetSystemMetrics(SM_CYSCREEN);
-                if (screen_w > 0 && screen_h > 0) {
-                    const double screen_ratio = static_cast<double>(screen_w) / static_cast<double>(screen_h);
-                    // MacBook notch geometry signature: ratio is ~1.538 - 1.547
-                    if (screen_ratio >= 1.50 && screen_ratio <= 1.58) {
-                        const int usable_h = static_cast<int>(std::round(static_cast<double>(screen_w) / 1.6));
-                        const int notch_h = screen_h - usable_h;
-                        if (notch_h > 0 && notch_h <= 120) {
-                            RECT win_rect{};
-                            GetWindowRect(hwnd, &win_rect);
-                            const int cur_w = win_rect.right - win_rect.left;
-                            const int cur_h = win_rect.bottom - win_rect.top;
-                            if (cur_w >= screen_w && (win_rect.top != notch_h || cur_h != usable_h)) {
-                                SetWindowPos(hwnd, nullptr, 0, notch_h, screen_w, usable_h,
-                                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
-                                s_notch_was_aligned = true;
-                            }
-                        }
+                RECT win_rect{};
+                GetWindowRect(hwnd, &win_rect);
+                if (win_rect.top > 0) {
+                    const int screen_w = GetSystemMetrics(SM_CXSCREEN);
+                    const int screen_h = GetSystemMetrics(SM_CYSCREEN);
+                    if (screen_w > 0 && screen_h > 0) {
+                        SetWindowPos(hwnd, nullptr, 0, 0, screen_w, screen_h,
+                                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
                     }
                 }
             }
-        } else if (s_notch_was_aligned) {
-            HWND hwnd = g_framework->get_window();
-            if (hwnd != nullptr && IsWindow(hwnd)) {
-                const int screen_w = GetSystemMetrics(SM_CXSCREEN);
-                const int screen_h = GetSystemMetrics(SM_CYSCREEN);
-                if (screen_w > 0 && screen_h > 0) {
-                    SetWindowPos(hwnd, nullptr, 0, 0, screen_w, screen_h,
-                                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
-                }
-            }
-            s_notch_was_aligned = false;
-        }
+        });
     }
 }
 
