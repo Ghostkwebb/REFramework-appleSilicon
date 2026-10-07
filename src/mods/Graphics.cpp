@@ -694,12 +694,6 @@ void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
             if (win_w > 0.0f && win_h > 0.0f) {
                 sdk::via::window_borderless_w(window) = win_w;
                 sdk::via::window_borderless_h(window) = win_h;
-                if (sdk::GameIdentity::get().is_pragmata() || sdk::GameIdentity::get().is_dd2() || sdk::GameIdentity::get().is_re9()) {
-                    ((sdk::via::W::dd2*)window)->borderless_size.w = win_w;
-                    ((sdk::via::W::dd2*)window)->borderless_size.h = win_h;
-                    ((sdk::via::W::re9*)window)->borderless_size.w = win_w;
-                    ((sdk::via::W::re9*)window)->borderless_size.h = win_h;
-                }
             }
         }
     }
@@ -820,12 +814,6 @@ void Graphics::do_ultrawide_fix() {
         if (win_w > 0.0f && win_h > 0.0f) {
             sdk::via::window_borderless_w(window) = win_w;
             sdk::via::window_borderless_h(window) = win_h;
-            if (sdk::GameIdentity::get().is_pragmata() || sdk::GameIdentity::get().is_dd2() || sdk::GameIdentity::get().is_re9()) {
-                ((sdk::via::W::dd2*)window)->borderless_size.w = win_w;
-                ((sdk::via::W::dd2*)window)->borderless_size.h = win_h;
-                ((sdk::via::W::re9*)window)->borderless_size.w = win_w;
-                ((sdk::via::W::re9*)window)->borderless_size.h = win_h;
-            }
         }
     }
 
@@ -874,23 +862,6 @@ void Graphics::do_ultrawide_fix() {
             m_last_applied_view = (uintptr_t)main_view;
             m_last_applied_display_type = (int32_t)display_type;
         }
-
-        static std::once_flag s_reset_window_flag;
-        std::call_once(s_reset_window_flag, []() {
-            HWND hwnd = g_framework->get_window();
-            if (hwnd != nullptr && IsWindow(hwnd)) {
-                RECT win_rect{};
-                GetWindowRect(hwnd, &win_rect);
-                if (win_rect.top > 0) {
-                    const int screen_w = GetSystemMetrics(SM_CXSCREEN);
-                    const int screen_h = GetSystemMetrics(SM_CYSCREEN);
-                    if (screen_w > 0 && screen_h > 0) {
-                        SetWindowPos(hwnd, nullptr, 0, 0, screen_w, screen_h,
-                                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
-                    }
-                }
-            }
-        });
     }
 }
 
