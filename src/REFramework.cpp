@@ -99,7 +99,16 @@ void REFramework::hook_monitor() {
         || (renderer_type == REFramework::RendererType::D3D11 && d3d11 != nullptr && !d3d11->is_inside_present()) 
         || (renderer_type == REFramework::RendererType::D3D12 && d3d12 != nullptr && !d3d12->is_inside_present())) 
     {
-        // On Darwin / macOS, initial shader compilation and asset loading can take 30-45 seconds.
+        // On Darwin / macOS, D3D12 hooks on COM vtables are persistent and never lost.
+        // During shader compilation or level loading, long gaps between Present() calls
+        // must never trigger rehooking, which destroys swapchains and causes rendering deadlocks.
+        if (utility::DarwinHost::is_darwin() && d3d12 != nullptr && d3d12->is_hooked()) {
+            m_last_present_time = now;
+            m_last_chance_time = now;
+            m_has_last_chance = true;
+            return;
+        }
+
         // Never trigger rehooks while initial game data initialization is still in progress.
         if (!is_ready()) {
             m_last_present_time = now;
@@ -564,9 +573,8 @@ REFramework::REFramework(HMODULE reframework_module)
             IntegrityCheckBypass::immediate_patch_dd2();
         }
 
-        if (gi.tdb_ver() >= 82) {
-            // Fixes new code added in RE9 only. Maybe >= TDB83 too. Probably will change.
-            // Addendum: Found to be present in MHSTORIES3 (TDB 82) as well, so this is not RE9 exclusive.
+        if (!gi.is_pragmata() && (gi.is_re9() || gi.is_mhstories3())) {
+            // Fixes new code added in RE9 / MHStories3.
             IntegrityCheckBypass::immediate_patch_re9();
         }
 
