@@ -99,8 +99,19 @@ void REFramework::hook_monitor() {
         || (renderer_type == REFramework::RendererType::D3D11 && d3d11 != nullptr && !d3d11->is_inside_present()) 
         || (renderer_type == REFramework::RendererType::D3D12 && d3d12 != nullptr && !d3d12->is_inside_present())) 
     {
-        // check if present time is more than 5 seconds ago
-        if (now - m_last_present_time > std::chrono::seconds(5)) {
+        // On Darwin / macOS, initial shader compilation and asset loading can take 30-45 seconds.
+        // Never trigger rehooks while initial game data initialization is still in progress.
+        if (!is_ready()) {
+            m_last_present_time = now;
+            m_last_chance_time = now;
+            m_has_last_chance = true;
+            return;
+        }
+
+        const auto timeout = utility::DarwinHost::is_darwin() ? std::chrono::seconds(45) : std::chrono::seconds(5);
+
+        // check if present time is more than timeout ago
+        if (now - m_last_present_time > timeout) {
             if (m_has_last_chance) {
                 // the purpose of this is to make sure that the game is not frozen
                 // e.g. if we are debugging the game, so we don't rehook anything on accident
@@ -110,7 +121,7 @@ void REFramework::hook_monitor() {
                 spdlog::info("Last chance encountered for hooking");
             }
 
-            if (!m_has_last_chance && now - m_last_chance_time > std::chrono::seconds(1)) {
+            if (!m_has_last_chance && now - m_last_chance_time > std::chrono::seconds(2)) {
                 spdlog::info("Sending rehook request for D3D");
 
                 // hook_d3d12 always gets called first.
@@ -122,9 +133,9 @@ void REFramework::hook_monitor() {
 
                 // so we don't immediately go and hook it again
                 // add some additional time to it to give it some leeway
-                m_last_present_time = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-                m_last_message_time = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-                m_last_chance_time = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                m_last_present_time = std::chrono::steady_clock::now() + timeout;
+                m_last_message_time = std::chrono::steady_clock::now() + timeout;
+                m_last_chance_time = std::chrono::steady_clock::now() + std::chrono::seconds(2);
                 m_has_last_chance = true;
             }
         } else {

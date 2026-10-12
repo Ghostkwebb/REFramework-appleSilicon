@@ -15,6 +15,21 @@
 #include "ExceptionHandler.hpp"
 
 LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei) {
+    if (ei == nullptr || ei->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto code = ei->ExceptionRecord->ExceptionCode;
+    // Filter out debugger notifications, thread naming exceptions, and Wine-internal assertions/stubs
+    if (code == 0x406D1388 || // MSVC SetThreadName
+        code == 0x80000100 || // STATUS_WINE_STUB
+        code == 0x80000101 || // STATUS_WINE_ASSERTION
+        code == 0x40010006 || // DBG_PRINTEXCEPTION_C
+        code == 0x4001000A)   // DBG_PRINTEXCEPTION_WIDE_C
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
     static std::recursive_mutex mtx{};
     std::scoped_lock _{ mtx };
 

@@ -783,8 +783,8 @@ bool D3D12Hook::unhook() {
 
     m_command_queue = nullptr;
     m_fallback_command_queue.Reset();
-    s_captured_command_queue.Reset();
-    s_execute_command_lists_hook.reset();
+    // Do NOT reset s_captured_command_queue or s_execute_command_lists_hook:
+    // The game's command queue remains valid across swapchain resets.
 
     m_present_hook.reset();
     m_swapchain_hook.reset();
