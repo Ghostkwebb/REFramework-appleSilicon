@@ -41,20 +41,13 @@ static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
     return is_direct;
 }
 
-static IDXGISwapChain3* get_engine_swapchain() {
-    try {
-        auto output_layer = sdk::renderer::get_output_layer();
-        if (output_layer == nullptr || IsBadReadPtr(output_layer, sizeof(void*))) {
-            return nullptr;
-        }
+static IDXGISwapChain3* scan_for_swapchain_seh(void* present_state) {
+    if (present_state == nullptr || IsBadReadPtr(present_state, sizeof(void*))) {
+        return nullptr;
+    }
 
-        auto present_state = output_layer->get_present_state();
-        if (present_state == nullptr || IsBadReadPtr(present_state, sizeof(void*))) {
-            return nullptr;
-        }
-
-        // In RE Engine DX12, OutputTargetStateDX12 holds swapchains[2] around offset 0xF0.
-        // We scan offsets up to 0x200 for a COM object implementing IDXGISwapChain3.
+    IDXGISwapChain3* result = nullptr;
+    __try {
         for (size_t offset = 0; offset <= 0x200 - sizeof(void*); offset += sizeof(void*)) {
             const auto candidate_addr = (uintptr_t)present_state + offset;
             if (IsBadReadPtr((void*)candidate_addr, sizeof(void*))) {
@@ -68,11 +61,34 @@ static IDXGISwapChain3* get_engine_swapchain() {
                     IUnknown* unk = (IUnknown*)candidate;
                     IDXGISwapChain3* sc = nullptr;
                     if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
-                        spdlog::info("D3D12Hook: Found real engine swapchain at offset 0x{:X}: {:x}", offset, (uintptr_t)sc);
-                        return sc;
+                        result = sc;
+                        break;
                     }
                 }
             }
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        result = nullptr;
+    }
+    return result;
+}
+
+static IDXGISwapChain3* get_engine_swapchain() {
+    try {
+        auto output_layer = sdk::renderer::get_output_layer();
+        if (output_layer == nullptr || IsBadReadPtr(output_layer, sizeof(void*))) {
+            return nullptr;
+        }
+
+        auto present_state = output_layer->get_present_state();
+        if (present_state == nullptr) {
+            return nullptr;
+        }
+
+        auto sc = scan_for_swapchain_seh(present_state);
+        if (sc != nullptr) {
+            spdlog::info("D3D12Hook: Found real engine swapchain: {:x}", (uintptr_t)sc);
+            return sc;
         }
     } catch (...) {
         spdlog::warn("D3D12Hook: Exception while searching for engine swapchain");
@@ -89,8 +105,9 @@ void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, v
         return hook->get_original<decltype(link_swapchain_to_cmd_queue)>()(rcx, rdx, r8, r9);
     }
 
-    while (g_framework == nullptr) {
-        std::this_thread::yield();
+    if (g_framework == nullptr) {
+        auto& hook = D3D12Hook::s_streamline.link_swapchain_to_cmd_queue_hook;
+        return hook->get_original<decltype(link_swapchain_to_cmd_queue)>()(rcx, rdx, r8, r9);
     }
 
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
@@ -146,8 +163,8 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
         }
     }
 
-    while (g_framework == nullptr) {
-        std::this_thread::yield();
+    if (g_framework == nullptr) {
+        return create_swap_chain_fn(factory, device, hwnd, desc, p_fullscreen_desc, p_restrict_to_output, swap_chain);
     }
 
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
@@ -673,20 +690,12 @@ bool D3D12Hook::hook() {
         s_wine_cq_delta = utility::DarwinHost::calculate_command_queue_delta((void*)scan_object, s_command_queue_offset, command_queue);
     }
 
-    //utility::ThreadSuspender suspender{};
+    s_swapchain_vtable = *(void***)target_swapchain;
+    s_factory_vtable = *(void***)factory;
 
-    try {
-        s_swapchain_vtable = *(void***)target_swapchain;
-        s_factory_vtable = *(void***)factory;
-
-        hook_impl();
-    } catch (const std::exception& e) {
-        spdlog::error("Failed to initialize hooks: {}", e.what());
-        m_hooked = false;
-    }
-
-    //suspender.resume();
-
+    // Release dummy objects and destroy dummy window BEFORE installing hooks!
+    // This guarantees Wine/winemac.drv Cocoa window destruction completes cleanly
+    // without deadlocking against intercepted rendering calls on the game's threads.
     command_queue->Release();
     swap_chain1->Release();
     swap_chain->Release();
@@ -704,6 +713,13 @@ bool D3D12Hook::hook() {
 
     if (wc.lpszClassName != nullptr) {
         ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+    }
+
+    try {
+        hook_impl();
+    } catch (const std::exception& e) {
+        spdlog::error("Failed to initialize hooks: {}", e.what());
+        m_hooked = false;
     }
 
     return m_hooked;
@@ -754,11 +770,10 @@ void D3D12Hook::hook_impl() {
 }
 
 bool D3D12Hook::unhook() {
-    while (g_framework == nullptr) {
-        std::this_thread::yield();
+    std::unique_lock<std::recursive_mutex> lock{};
+    if (g_framework != nullptr) {
+        lock = std::unique_lock<std::recursive_mutex>{g_framework->get_hook_monitor_mutex()};
     }
-
-    std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     if (!m_hooked) {
         return true;
@@ -783,8 +798,27 @@ bool D3D12Hook::unhook() {
 thread_local int32_t g_present_depth = 0;
 
 HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_interval, uint64_t flags, void* r9) {
-    while (g_framework == nullptr) {
-        std::this_thread::yield();
+    if (g_framework == nullptr || g_d3d12_hook == nullptr) {
+        if (g_d3d12_hook != nullptr) {
+            if (g_d3d12_hook->m_is_phase_1 && g_d3d12_hook->m_present_hook != nullptr) {
+                auto orig = g_d3d12_hook->m_present_hook->get_original<decltype(D3D12Hook::present)*>();
+                if (orig != nullptr) {
+                    return orig(swap_chain, sync_interval, flags, r9);
+                }
+            } else if (!g_d3d12_hook->m_is_phase_1 && g_d3d12_hook->m_swapchain_hook != nullptr) {
+                auto orig = g_d3d12_hook->m_swapchain_hook->get_method<decltype(D3D12Hook::present)*>(8);
+                if (orig != nullptr) {
+                    return orig(swap_chain, sync_interval, flags, r9);
+                }
+            }
+        }
+        if (s_swapchain_vtable != nullptr && s_swapchain_vtable[8] != nullptr) {
+            auto orig = (decltype(D3D12Hook::present)*)s_swapchain_vtable[8];
+            if ((uintptr_t)orig != (uintptr_t)&D3D12Hook::present) {
+                return orig(swap_chain, sync_interval, flags, r9);
+            }
+        }
+        return S_OK;
     }
 
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
@@ -983,8 +1017,20 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 thread_local int32_t g_resize_buffers_depth = 0;
 
 HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags) {
-    while (g_framework == nullptr) {
-        std::this_thread::yield();
+    if (g_framework == nullptr || g_d3d12_hook == nullptr) {
+        if (g_d3d12_hook != nullptr && g_d3d12_hook->m_swapchain_hook != nullptr) {
+            auto orig = g_d3d12_hook->m_swapchain_hook->get_method<decltype(D3D12Hook::resize_buffers)*>(13);
+            if (orig != nullptr) {
+                return orig(swap_chain, buffer_count, width, height, new_format, swap_chain_flags);
+            }
+        }
+        if (s_swapchain_vtable != nullptr && s_swapchain_vtable[13] != nullptr) {
+            auto orig = (decltype(D3D12Hook::resize_buffers)*)s_swapchain_vtable[13];
+            if ((uintptr_t)orig != (uintptr_t)&D3D12Hook::resize_buffers) {
+                return orig(swap_chain, buffer_count, width, height, new_format, swap_chain_flags);
+            }
+        }
+        return S_OK;
     }
 
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
@@ -1072,8 +1118,20 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
 thread_local int32_t g_resize_target_depth = 0;
 
 HRESULT WINAPI D3D12Hook::resize_target(IDXGISwapChain3* swap_chain, const DXGI_MODE_DESC* new_target_parameters) {
-    while (g_framework == nullptr) {
-        std::this_thread::yield();
+    if (g_framework == nullptr || g_d3d12_hook == nullptr) {
+        if (g_d3d12_hook != nullptr && g_d3d12_hook->m_swapchain_hook != nullptr) {
+            auto orig = g_d3d12_hook->m_swapchain_hook->get_method<decltype(D3D12Hook::resize_target)*>(14);
+            if (orig != nullptr) {
+                return orig(swap_chain, new_target_parameters);
+            }
+        }
+        if (s_swapchain_vtable != nullptr && s_swapchain_vtable[14] != nullptr) {
+            auto orig = (decltype(D3D12Hook::resize_target)*)s_swapchain_vtable[14];
+            if ((uintptr_t)orig != (uintptr_t)&D3D12Hook::resize_target) {
+                return orig(swap_chain, new_target_parameters);
+            }
+        }
+        return S_OK;
     }
 
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};

@@ -78,6 +78,7 @@ public:
     void on_frame_d3d12();
     void on_post_present_d3d12();
     void on_reset();
+    void initialize_hook();
 
     void patch_set_cursor_pos();
     void remove_set_cursor_pos_patch();
@@ -285,6 +286,7 @@ private:
     uint32_t m_frames_since_init{0};
     bool m_has_last_chance{true};
     bool m_first_initialize{true};
+    bool m_valid_render_frame{false};
 
     bool m_sent_message{false};
     bool m_message_hook_requested{false};
