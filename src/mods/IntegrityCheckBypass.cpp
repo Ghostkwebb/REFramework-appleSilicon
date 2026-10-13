@@ -2178,7 +2178,7 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
     // I noticed that when any of these frame counts were set to 0, the penalty path triggered and the game lagged to hell or crashed.
     // I then noticed that making these values equal to the frame count always made the clean path trigger, even if the integrity checks were triggered.
     // No patching necessary!
-    if (!sdk::GameIdentity::get().is_re9()) {
+    if (sdk::GameIdentity::get().tdb_ver() < 82) {
         return;
     }
     static auto renderer_t = sdk::find_type_definition("via.render.Renderer");
