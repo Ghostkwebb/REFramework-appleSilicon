@@ -680,8 +680,8 @@ void FaultyFileDetector::on_draw_ui() {
 }
 
 void FaultyFileDetector::early_init() {
-    // Pre-TDB81 games don't have the scan patterns the detector looks for.
-    if (sdk::GameIdentity::get().tdb_ver() < 81) {
+    // FaultyFileDetector is only for MHWILDS.
+    if (!sdk::GameIdentity::get().is_mhwilds()) {
         return;
     }
     if (g_faulty_detector_instance == nullptr) {

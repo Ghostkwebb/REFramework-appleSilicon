@@ -544,9 +544,11 @@ REFramework::REFramework(HMODULE reframework_module)
         }
     }
 
-    LooseTextureLoader::get().early_initialize();
+    if (gi.is_mhwilds()) {
+        LooseTextureLoader::get().early_initialize();
+    }
 
-    if (gi.tdb_ver() >= 81) {
+    if (gi.is_mhwilds()) {
         FaultyFileDetector::early_init();
     }
 
@@ -641,7 +643,7 @@ REFramework::REFramework(HMODULE reframework_module)
         auto& loader = LooseFileLoader::get(); // Initialize this really early
         auto &integrity_bypass = IntegrityCheckBypass::get_shared_instance();
 
-        const bool has_faulty_file_detector = gi.tdb_ver() >= 81;
+        const bool has_faulty_file_detector = gi.is_mhwilds();
         if (has_faulty_file_detector) {
             FaultyFileDetector::get(); // Initialize early
         }

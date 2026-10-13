@@ -11,10 +11,13 @@
 #include "utility/Patch.hpp"
 
 #include "utility/Exceptions.hpp"
+#include "utility/FunctionHookMinHook.hpp"
 
 #include <sdk/GameIdentity.hpp>
 #include "REFramework.hpp"
 #include "ExceptionHandler.hpp"
+
+static LPTOP_LEVEL_EXCEPTION_FILTER s_previous_filter = nullptr;
 
 LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei) {
     if (ei == nullptr || ei->ExceptionRecord == nullptr) {
@@ -226,60 +229,50 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         l->flush();
     }
 
+    if (s_previous_filter != nullptr) {
+        return s_previous_filter(ei);
+    }
+
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
-static LONG WINAPI vectored_exception_handler(struct _EXCEPTION_POINTERS* ei) {
-    if (ei == nullptr || ei->ExceptionRecord == nullptr) {
-        return EXCEPTION_CONTINUE_SEARCH;
+static std::unique_ptr<FunctionHookMinHook> s_set_unhandled_exception_filter_hook{};
+
+static LPTOP_LEVEL_EXCEPTION_FILTER WINAPI hooked_set_unhandled_exception_filter(LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExceptionFilter) {
+    spdlog::info("SetUnhandledExceptionFilter called by module/game: {:p}", (void*)lpTopLevelExceptionFilter);
+    auto old = s_previous_filter;
+    if (lpTopLevelExceptionFilter != reframework::global_exception_handler) {
+        s_previous_filter = lpTopLevelExceptionFilter;
     }
-
-    const auto code = ei->ExceptionRecord->ExceptionCode;
-
-    // Filter out debugger notifications, thread naming exceptions, and Wine-internal assertions/stubs
-    if (code == 0x406D1388 || // MSVC SetThreadName
-        code == 0x80000100 || // STATUS_WINE_STUB
-        code == 0x80000101 || // STATUS_WINE_ASSERTION
-        code == 0x40010006 || // DBG_PRINTEXCEPTION_C
-        code == 0x4001000A || // DBG_PRINTEXCEPTION_WIDE_C
-        code == 0xE06D7363 || // MSVC C++ EH Exception
-        code == 0x80000001 || // EXCEPTION_GUARD_PAGE
-        code == 0x80000003 || // EXCEPTION_BREAKPOINT
-        code == 0x80000004)   // EXCEPTION_SINGLE_STEP
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    // Only process fatal hardware/memory exceptions
-    if (code == EXCEPTION_ACCESS_VIOLATION ||
-        code == EXCEPTION_ILLEGAL_INSTRUCTION ||
-        code == EXCEPTION_IN_PAGE_ERROR ||
-        code == EXCEPTION_STACK_OVERFLOW ||
-        code == EXCEPTION_PRIV_INSTRUCTION ||
-        code == 0xC0000420 /* STATUS_ASSERTION_FAILURE */ ||
-        code == 0x40000015 /* STATUS_FATAL_APP_EXIT */)
-    {
-        static std::atomic<bool> s_veh_fired{false};
-        if (!s_veh_fired.exchange(true)) {
-            reframework::global_exception_handler(ei);
-        }
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
+    // Prevent Capcom CrashHandler or game from unhooking our crash reporter
+    return old;
 }
 
 void reframework::setup_exception_handler() {
-    static bool s_veh_installed = false;
-    if (!s_veh_installed) {
-        s_veh_installed = true;
-        AddVectoredExceptionHandler(1, vectored_exception_handler);
+    static bool s_handler_installed = false;
+    if (!s_handler_installed) {
+        s_handler_installed = true;
+
         std::set_terminate([]() {
             spdlog::critical("std::terminate called! Process terminating due to unhandled C++ exception.");
             if (auto l = spdlog::default_logger()) {
                 l->flush();
             }
         });
-    }
 
-    SetUnhandledExceptionFilter(global_exception_handler);
+        // Set our unhandled exception filter first and save any existing filter
+        s_previous_filter = SetUnhandledExceptionFilter(global_exception_handler);
+
+        // Hook SetUnhandledExceptionFilter to prevent game / CrashHandler.dll from overriding it
+        s_set_unhandled_exception_filter_hook = std::make_unique<FunctionHookMinHook>(
+            SetUnhandledExceptionFilter,
+            hooked_set_unhandled_exception_filter
+        );
+
+        if (!s_set_unhandled_exception_filter_hook->create()) {
+            spdlog::error("Could not hook SetUnhandledExceptionFilter!");
+        } else {
+            spdlog::info("Hooked SetUnhandledExceptionFilter successfully");
+        }
+    }
 }

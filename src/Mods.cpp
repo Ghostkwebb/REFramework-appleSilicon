@@ -37,7 +37,7 @@ Mods::Mods() {
     m_mods.emplace_back(Hooks::get());
     m_mods.emplace_back(LooseFileLoader::get());
 
-    if (sdk::GameIdentity::get().tdb_ver() >= 81) {
+    if (sdk::GameIdentity::get().is_mhwilds()) {
         m_mods.emplace_back(FaultyFileDetector::get());
     }
 

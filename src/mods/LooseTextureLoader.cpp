@@ -62,7 +62,7 @@ void LooseTextureLoader::on_draw_ui() {
 #if !ENABLE_LOOSE_TEXTURE_LOADER
     return;
 #else
-    if (sdk::GameIdentity::get().tdb_ver() < 81) {
+    if (!sdk::GameIdentity::get().is_mhwilds()) {
         return;
     }
 
@@ -120,8 +120,8 @@ void LooseTextureLoader::on_draw_ui() {
 
 void LooseTextureLoader::early_initialize() {
 #if ENABLE_LOOSE_TEXTURE_LOADER
-    // Only TDB>=81 games (MHWILDS+) have the DStorage-based loose texture path.
-    if (sdk::GameIdentity::get().tdb_ver() < 81) {
+    // Only MHWILDS has the DStorage-based loose texture path.
+    if (!sdk::GameIdentity::get().is_mhwilds()) {
         return;
     }
     hook_dstorage_path_checks();

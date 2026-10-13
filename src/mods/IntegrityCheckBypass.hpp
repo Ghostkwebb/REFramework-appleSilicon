@@ -69,7 +69,7 @@ private:
     static inline std::optional<uintptr_t> s_sha3_code_end{};
     static inline int s_patch_count;
     static inline bool s_patch_count_checked;
-    static inline std::optional<std::uint8_t> s_pak_flags_value{};
+    static inline thread_local std::optional<std::uint8_t> s_pak_flags_value{};
     static inline safetyhook::MidHook s_patch_store_flags_hook;
     static inline INSTRUX s_pak_load_check_insn{};
 
