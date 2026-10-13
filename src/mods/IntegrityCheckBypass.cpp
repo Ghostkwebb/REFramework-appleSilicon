@@ -7,6 +7,7 @@
 #include <regex>
 #include <fstream>
 #include <immintrin.h>
+#include <format>
 
 #include <asmjit/asmjit.h>
 #include <asmjit/x86/x86assembler.h>
@@ -2178,7 +2179,11 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
     // I noticed that when any of these frame counts were set to 0, the penalty path triggered and the game lagged to hell or crashed.
     // I then noticed that making these values equal to the frame count always made the clean path trigger, even if the integrity checks were triggered.
     // No patching necessary!
-    if (sdk::GameIdentity::get().tdb_ver() < 82) {
+    const auto& gi = sdk::GameIdentity::get();
+    if (gi.is_pragmata() || (!gi.is_re9() && !gi.is_mhstories3())) {
+        return;
+    }
+    if (gi.tdb_ver() < 82) {
         return;
     }
     static auto renderer_t = sdk::find_type_definition("via.render.Renderer");
@@ -2190,7 +2195,7 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
         static std::vector<uintptr_t> candidates{};
         static uint32_t last_scan_frame = 0;
         static int confirmation_count = 0;
-        static constexpr int CONFIRMATIONS_NEEDED = 3;
+        static constexpr int CONFIRMATIONS_NEEDED = 5;
         static constexpr int32_t MAX_DISTANCE = 1000;
         static constexpr size_t HEARTBEAT_COUNT = 6;
 
@@ -2558,13 +2563,44 @@ void IntegrityCheckBypass::hook_rtl_exit_user_process() {
 }
 
 void* IntegrityCheckBypass::rtl_exit_user_process_hook(uint32_t code) {
-    /*__try {
-        auto orig = s_rtl_exit_user_process_hook->get_original<decltype(rtl_exit_user_process_hook)>()(code);
-        return orig;
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        TerminateProcess(GetCurrentProcess(), code);
-        return nullptr;
-    }*/
+    const auto retaddr = (uintptr_t)_ReturnAddress();
+    const auto mod = utility::get_module_within(retaddr);
+    std::string mod_name = "unknown";
+    uintptr_t mod_base = 0;
+    uintptr_t offset = 0;
+    if (mod) {
+        mod_base = (uintptr_t)*mod;
+        offset = retaddr - mod_base;
+        auto p = utility::get_module_path(*mod);
+        if (p) mod_name = *p;
+    }
+
+    spdlog::critical("[IntegrityCheckBypass]: RtlExitUserProcess called with exit code 0x{:X} from 0x{:X} ({} + 0x{:X})!", 
+        code, retaddr, mod_name, offset);
+    if (auto l = spdlog::default_logger()) {
+        l->flush();
+    }
+
+    try {
+        const auto crash_log_path = REFramework::get_persistent_dir("re2_framework_crash.txt").string();
+        HANDLE crash_file = CreateFileA(crash_log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (crash_file != INVALID_HANDLE_VALUE) {
+            std::string report = std::format(
+                "================================================================================\r\n"
+                "REFramework Process Termination Report\r\n"
+                "================================================================================\r\n"
+                "RtlExitUserProcess called with exit code: 0x{:08X}\r\n"
+                "Caller Return Address: 0x{:016X}\r\n"
+                "Caller Module:         {} (Base: 0x{:X}, Offset: 0x{:X})\r\n"
+                "================================================================================\r\n",
+                code, retaddr, mod_name, mod_base, offset
+            );
+            DWORD bytes_written = 0;
+            WriteFile(crash_file, report.data(), (DWORD)report.size(), &bytes_written, nullptr);
+            FlushFileBuffers(crash_file);
+            CloseHandle(crash_file);
+        }
+    } catch (...) {}
 
     // ok for some reason I can't explain yet,
     // we need to do this because the game crashes if we don't

@@ -2,6 +2,8 @@
 #include <DbgHelp.h>
 #include <ShlObj.h>
 #include <filesystem>
+#include <atomic>
+#include <exception>
 #include <spdlog/spdlog.h>
 
 #include "utility/Module.hpp"
@@ -25,13 +27,22 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         code == 0x80000100 || // STATUS_WINE_STUB
         code == 0x80000101 || // STATUS_WINE_ASSERTION
         code == 0x40010006 || // DBG_PRINTEXCEPTION_C
-        code == 0x4001000A)   // DBG_PRINTEXCEPTION_WIDE_C
+        code == 0x4001000A || // DBG_PRINTEXCEPTION_WIDE_C
+        code == 0xE06D7363 || // MSVC C++ EH Exception
+        code == 0x80000001 || // EXCEPTION_GUARD_PAGE
+        code == 0x80000003 || // EXCEPTION_BREAKPOINT
+        code == 0x80000004)   // EXCEPTION_SINGLE_STEP
     {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
     static std::recursive_mutex mtx{};
     std::scoped_lock _{ mtx };
+
+    static std::atomic<bool> s_crash_logged{false};
+    if (s_crash_logged.exchange(true)) {
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
 
     spdlog::flush_on(spdlog::level::err);
 
@@ -89,6 +100,7 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
 
                 static auto patch = Patch::create(ei->ContextRecord->Rip, patch_int16_bytes);
                 spdlog::info("Successfully patched RE8 overlay draw crash.");
+                s_crash_logged = false;
                 return EXCEPTION_CONTINUE_EXECUTION;
             } else {
                 spdlog::info("Instructions did not match RE8 overlay draw crash.");
@@ -217,6 +229,57 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+static LONG WINAPI vectored_exception_handler(struct _EXCEPTION_POINTERS* ei) {
+    if (ei == nullptr || ei->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto code = ei->ExceptionRecord->ExceptionCode;
+
+    // Filter out debugger notifications, thread naming exceptions, and Wine-internal assertions/stubs
+    if (code == 0x406D1388 || // MSVC SetThreadName
+        code == 0x80000100 || // STATUS_WINE_STUB
+        code == 0x80000101 || // STATUS_WINE_ASSERTION
+        code == 0x40010006 || // DBG_PRINTEXCEPTION_C
+        code == 0x4001000A || // DBG_PRINTEXCEPTION_WIDE_C
+        code == 0xE06D7363 || // MSVC C++ EH Exception
+        code == 0x80000001 || // EXCEPTION_GUARD_PAGE
+        code == 0x80000003 || // EXCEPTION_BREAKPOINT
+        code == 0x80000004)   // EXCEPTION_SINGLE_STEP
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Only process fatal hardware/memory exceptions
+    if (code == EXCEPTION_ACCESS_VIOLATION ||
+        code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+        code == EXCEPTION_IN_PAGE_ERROR ||
+        code == EXCEPTION_STACK_OVERFLOW ||
+        code == EXCEPTION_PRIV_INSTRUCTION ||
+        code == 0xC0000420 /* STATUS_ASSERTION_FAILURE */ ||
+        code == 0x40000015 /* STATUS_FATAL_APP_EXIT */)
+    {
+        static std::atomic<bool> s_veh_fired{false};
+        if (!s_veh_fired.exchange(true)) {
+            reframework::global_exception_handler(ei);
+        }
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void reframework::setup_exception_handler() {
+    static bool s_veh_installed = false;
+    if (!s_veh_installed) {
+        s_veh_installed = true;
+        AddVectoredExceptionHandler(1, vectored_exception_handler);
+        std::set_terminate([]() {
+            spdlog::critical("std::terminate called! Process terminating due to unhandled C++ exception.");
+            if (auto l = spdlog::default_logger()) {
+                l->flush();
+            }
+        });
+    }
+
     SetUnhandledExceptionFilter(global_exception_handler);
 }
