@@ -106,7 +106,7 @@ private:
     static constexpr float NOTIFICATION_HEIGHT = 30.0f;
     static constexpr float NOTIFICATION_PADDING = 8.0f;
     static constexpr float NOTIFICATION_MARGIN = 4.0f;
-    ModToggle::Ptr m_enabled{ ModToggle::create(generate_name("Enabled"), true) };
+    ModToggle::Ptr m_enabled{ ModToggle::create(generate_name("Enabled"), false) };
     ModInt32::Ptr m_max_recent_files{ ModInt32::create(generate_name("MaxRecentFiles"), 100) };
 
     static inline FaultyFileDetector* s_instance{nullptr};

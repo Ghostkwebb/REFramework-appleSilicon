@@ -107,6 +107,66 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         spdlog::error("Module: Unknown");
     }
 
+    if (auto l = spdlog::default_logger()) {
+        l->flush();
+    }
+
+    // Write unbuffered crash summary to re2_framework_crash.txt so it is guaranteed to persist on disk
+    try {
+        const auto crash_log_path = REFramework::get_persistent_dir("re2_framework_crash.txt").string();
+        HANDLE crash_file = CreateFileA(crash_log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (crash_file != INVALID_HANDLE_VALUE) {
+            std::string report = std::format(
+                "================================================================================\r\n"
+                "REFramework Crash Report\r\n"
+                "================================================================================\r\n"
+                "Exception Code:    0x{:08X}\r\n"
+                "Exception Address: 0x{:016X}\r\n"
+                "Faulting RIP:      0x{:016X}\r\n"
+                "Faulting RSP:      0x{:016X}\r\n"
+                "Registers:\r\n"
+                "  RAX: 0x{:016X}  RBX: 0x{:016X}  RCX: 0x{:016X}  RDX: 0x{:016X}\r\n"
+                "  RSI: 0x{:016X}  RDI: 0x{:016X}  RBP: 0x{:016X}  RSP: 0x{:016X}\r\n"
+                "  R8:  0x{:016X}  R9:  0x{:016X}  R10: 0x{:016X}  R11: 0x{:016X}\r\n"
+                "  R12: 0x{:016X}  R13: 0x{:016X}  R14: 0x{:016X}  R15: 0x{:016X}\r\n"
+                "  EFLAGS: 0x{:08X}\r\n",
+                code,
+                (uintptr_t)ei->ExceptionRecord->ExceptionAddress,
+                ei->ContextRecord->Rip,
+                ei->ContextRecord->Rsp,
+                ei->ContextRecord->Rax, ei->ContextRecord->Rbx, ei->ContextRecord->Rcx, ei->ContextRecord->Rdx,
+                ei->ContextRecord->Rsi, ei->ContextRecord->Rdi, ei->ContextRecord->Rbp, ei->ContextRecord->Rsp,
+                ei->ContextRecord->R8,  ei->ContextRecord->R9,  ei->ContextRecord->R10, ei->ContextRecord->R11,
+                ei->ContextRecord->R12, ei->ContextRecord->R13, ei->ContextRecord->R14, ei->ContextRecord->R15,
+                ei->ContextRecord->EFlags
+            );
+
+            if (module_within) {
+                const auto module_path = utility::get_module_path(*module_within);
+                const auto mod_base = (uintptr_t)*module_within;
+                const auto offset = ei->ContextRecord->Rip - mod_base;
+                report += std::format("Module:            {} (Base: 0x{:X}, Offset: 0x{:X})\r\n",
+                    module_path ? *module_path : "Unknown", mod_base, offset);
+            } else {
+                report += "Module:            Unknown\r\n";
+            }
+
+            if (code == EXCEPTION_ACCESS_VIOLATION && ei->ExceptionRecord->NumberParameters >= 2) {
+                const auto access_type = ei->ExceptionRecord->ExceptionInformation[0];
+                const auto access_addr = ei->ExceptionRecord->ExceptionInformation[1];
+                report += std::format("Access Violation:  Attempted to {} address 0x{:016X}\r\n",
+                    access_type == 0 ? "READ" : (access_type == 1 ? "WRITE" : "EXECUTE"), access_addr);
+            }
+
+            report += "================================================================================\r\n";
+
+            DWORD bytes_written = 0;
+            WriteFile(crash_file, report.data(), (DWORD)report.size(), &bytes_written, nullptr);
+            FlushFileBuffers(crash_file);
+            CloseHandle(crash_file);
+        }
+    } catch (...) {}
+
     auto dbghelp = LoadLibrary("dbghelp.dll");
 
     if (dbghelp) {
@@ -148,6 +208,10 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         CloseHandle(f);
     } else {
         spdlog::error("Exception occurred, but could not load dbghelp.dll");
+    }
+
+    if (auto l = spdlog::default_logger()) {
+        l->flush();
     }
 
     return EXCEPTION_EXECUTE_HANDLER;

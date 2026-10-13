@@ -366,7 +366,7 @@ sdk::Resource* FaultyFileDetector::create_resource_hook(sdk::ResourceManager *re
     if (!m_enabled->value()) {
         return original_result;
     }
-    if (original_result == nullptr && name != nullptr) {
+    if (original_result == nullptr && name != nullptr && !IsBadStringPtrW(name, 1024)) {
         try_add_to_faulty_list(name, FaultyTier::Severe, FaultyReason::MissingFile);
     }
     return original_result;
@@ -379,8 +379,13 @@ void FaultyFileDetector::resource_parse_open_stream_failed_hook(safetyhook::Cont
 
     REResource_Via_Raw* resource = disasm_utils::get_register_value<REResource_Via_Raw*>(ctx, m_resource_open_failed_register);
 
-    if (resource) {
-        try_add_to_faulty_list(resource->path, FaultyTier::Severe, FaultyReason::MissingFile);
+    if (resource != nullptr) {
+        __try {
+            if (resource->path != nullptr && !IsBadStringPtrW(resource->path, 1024)) {
+                try_add_to_faulty_list(resource->path, FaultyTier::Severe, FaultyReason::MissingFile);
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
     }
 }
 
@@ -417,20 +422,27 @@ void FaultyFileDetector::resource_parse_finish_hook(safetyhook::Context& ctx) {
         {
             std::scoped_lock lock{m_mutex};
 
-            if (!m_resource_by_thread_map.contains(thread_id)) {
+            auto it = m_resource_by_thread_map.find(thread_id);
+            if (it == m_resource_by_thread_map.end()) {
                 return;
-            } else {
-                resource = reinterpret_cast<REResource_Via_Raw*>(m_resource_by_thread_map[thread_id]);
             }
+            resource = reinterpret_cast<REResource_Via_Raw*>(it->second);
+            m_resource_by_thread_map.erase(it);
         }
 
         // Get resource pointer from register
         if (resource != nullptr) {
-            // Log parsed resource path for debugging
-            // Get resource name
-            std::wstring_view resource_path(resource->path);
-            try_add_to_faulty_list(resource_path, FaultyTier::Severe, FaultyReason::Invalid);
+            __try {
+                if (resource->path != nullptr && !IsBadStringPtrW(resource->path, 1024)) {
+                    std::wstring_view resource_path(resource->path);
+                    try_add_to_faulty_list(resource_path, FaultyTier::Severe, FaultyReason::Invalid);
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
         }
+    } else {
+        std::scoped_lock lock{m_mutex};
+        m_resource_by_thread_map.erase(std::this_thread::get_id());
     }
 }
 

@@ -603,10 +603,13 @@ void LooseTextureLoader::handle_path_check_to_open_dstorage_file(safetyhook::Con
     wchar_t *target_path = (wchar_t*)context.rcx;
     wchar_t *search_str = (wchar_t*)context.rdx;
     
-    // Search if our path contains .tex extension, if yes, replace rdx with ".tex" to make wcsstr return true
-    if (target_path && search_str && wcsstr(target_path, TEX_FILE_EXTENSION) != nullptr) {
-        //spdlog::info("[LooseTextureLoader]: Detected loose .tex file, patching to bypass it! Path: {}", utility::narrow(target_path));
-        context.rdx = (uint64_t)TEX_FILE_EXTENSION;
+    // Only bypass if the path contains .tex extension AND the loose file actually exists on disk
+    if (target_path && search_str && !IsBadStringPtrW(target_path, 1024) && wcsstr(target_path, TEX_FILE_EXTENSION) != nullptr) {
+        std::error_code ec{};
+        if (std::filesystem::exists(target_path, ec)) {
+            //spdlog::info("[LooseTextureLoader]: Detected loose .tex file, patching to bypass it! Path: {}", utility::narrow(target_path));
+            context.rdx = (uint64_t)TEX_FILE_EXTENSION;
+        }
     }
 }
 
@@ -651,6 +654,10 @@ void LooseTextureLoader::release_pak_entry_data(REPakEntryData* handle_info) {
 }
 
 void LooseTextureLoader::handle_prepare_enqueue_texture_upload(safetyhook::Context& context) {
+    if (!m_enabled->value()) {
+        return;
+    }
+
     auto* stream = reinterpret_cast<REUniversalStream*>(context.rcx);
     if (stream == nullptr) {
         return;
@@ -672,6 +679,10 @@ void LooseTextureLoader::handle_prepare_enqueue_texture_upload(safetyhook::Conte
 }
 
 void LooseTextureLoader::handle_start_enqueue_texture_upload(safetyhook::Context& context) {
+    if (!m_enabled->value()) {
+        return;
+    }
+
     auto upload_state = reinterpret_cast<DStorageDataUploadState*>(context.rdx);
     if (upload_state == nullptr) {
         return;

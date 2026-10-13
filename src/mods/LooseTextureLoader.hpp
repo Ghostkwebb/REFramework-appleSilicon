@@ -115,7 +115,7 @@ private:
     std::mutex m_resource_path_counters_mutex{};
 
     // Config
-    ModToggle::Ptr m_enabled{ ModToggle::create(generate_name("Enabled"), true) };
+    ModToggle::Ptr m_enabled{ ModToggle::create(generate_name("Enabled"), false) };
     ModToggle::Ptr m_disable_texture_cache{ ModToggle::create(generate_name("DisableTextureCache"), false) };
 
     std::vector<std::reference_wrapper<IModValue>> m_options{
