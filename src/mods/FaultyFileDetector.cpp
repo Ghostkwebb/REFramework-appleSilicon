@@ -360,14 +360,30 @@ void FaultyFileDetector::on_config_save(utility::Config& cfg) {
     }
 }
 
+static bool is_valid_resource_string(const wchar_t* str, size_t max_len = 1024) {
+    if (str == nullptr) {
+        return false;
+    }
+    __try {
+        if (IsBadStringPtrW(str, (UINT_PTR)max_len)) {
+            return false;
+        }
+        return str[0] != L'\0';
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 sdk::Resource* FaultyFileDetector::create_resource_hook(sdk::ResourceManager *resource_manager, void* type_info, wchar_t* name) {
     //spdlog::warn("[FaultyFileDetector]: create_resource_hook called with name: {}", utility::narrow(name ? name : L"(null)"));
     auto original_result = m_create_resource_original.call<sdk::Resource*>(resource_manager, type_info, name);
     if (!m_enabled->value()) {
         return original_result;
     }
-    if (original_result == nullptr && name != nullptr && !IsBadStringPtrW(name, 1024)) {
-        try_add_to_faulty_list(name, FaultyTier::Severe, FaultyReason::MissingFile);
+    if (original_result == nullptr && is_valid_resource_string(name)) {
+        try {
+            try_add_to_faulty_list(name, FaultyTier::Severe, FaultyReason::MissingFile);
+        } catch (...) {}
     }
     return original_result;
 }
@@ -379,13 +395,10 @@ void FaultyFileDetector::resource_parse_open_stream_failed_hook(safetyhook::Cont
 
     REResource_Via_Raw* resource = disasm_utils::get_register_value<REResource_Via_Raw*>(ctx, m_resource_open_failed_register);
 
-    if (resource != nullptr) {
-        __try {
-            if (resource->path != nullptr && !IsBadStringPtrW(resource->path, 1024)) {
-                try_add_to_faulty_list(resource->path, FaultyTier::Severe, FaultyReason::MissingFile);
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
+    if (resource != nullptr && is_valid_resource_string(resource->path)) {
+        try {
+            try_add_to_faulty_list(resource->path, FaultyTier::Severe, FaultyReason::MissingFile);
+        } catch (...) {}
     }
 }
 
@@ -431,14 +444,11 @@ void FaultyFileDetector::resource_parse_finish_hook(safetyhook::Context& ctx) {
         }
 
         // Get resource pointer from register
-        if (resource != nullptr) {
-            __try {
-                if (resource->path != nullptr && !IsBadStringPtrW(resource->path, 1024)) {
-                    std::wstring_view resource_path(resource->path);
-                    try_add_to_faulty_list(resource_path, FaultyTier::Severe, FaultyReason::Invalid);
-                }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-            }
+        if (resource != nullptr && is_valid_resource_string(resource->path)) {
+            try {
+                std::wstring_view resource_path(resource->path);
+                try_add_to_faulty_list(resource_path, FaultyTier::Severe, FaultyReason::Invalid);
+            } catch (...) {}
         }
     } else {
         std::scoped_lock lock{m_mutex};
