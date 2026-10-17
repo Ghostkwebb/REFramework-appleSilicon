@@ -41,49 +41,72 @@ static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
     return is_direct;
 }
 
+static IDXGISwapChain3* try_query_swapchain_seh(void* candidate) {
+    if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+        return nullptr;
+    }
+
+    const auto ptr_val = (uintptr_t)candidate;
+    // On macOS / Rosetta, native Objective-C / Metal heap objects reside in 0x600000000000+
+    if ((ptr_val & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+        return nullptr;
+    }
+
+    void** vtable = *(void***)candidate;
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 10)) {
+        return nullptr;
+    }
+
+    const auto fn = (uintptr_t)vtable[0];
+    if ((fn & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+        return nullptr;
+    }
+
+    IDXGISwapChain3* sc = nullptr;
+    __try {
+        IUnknown* unk = (IUnknown*)candidate;
+        if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
+            return sc;
+        }
+        IDXGISwapChain* base_sc = nullptr;
+        if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&base_sc))) && base_sc != nullptr) {
+            if (SUCCEEDED(base_sc->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
+                base_sc->Release();
+                return sc;
+            }
+            base_sc->Release();
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+
+    return nullptr;
+}
+
 static IDXGISwapChain3* scan_for_swapchain_seh(void* base_obj, size_t max_scan = 0x800) {
     if (base_obj == nullptr || IsBadReadPtr(base_obj, sizeof(void*))) {
         return nullptr;
     }
 
-    IDXGISwapChain3* result = nullptr;
-    __try {
-        for (size_t offset = 0; offset <= max_scan - sizeof(void*); offset += sizeof(void*)) {
-            const auto candidate_addr = (uintptr_t)base_obj + offset;
-            if (IsBadReadPtr((void*)candidate_addr, sizeof(void*))) {
-                break;
-            }
-
-            void* candidate = *(void**)candidate_addr;
-            if (candidate != nullptr && !IsBadReadPtr(candidate, sizeof(void*))) {
-                void** vtable = *(void***)candidate;
-                if (vtable != nullptr && !IsBadReadPtr(vtable, sizeof(void*) * 10)) {
-                    IUnknown* unk = (IUnknown*)candidate;
-                    IDXGISwapChain3* sc = nullptr;
-                    if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
-                        result = sc;
-                        break;
-                    }
-                    IDXGISwapChain* base_sc = nullptr;
-                    if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&base_sc))) && base_sc != nullptr) {
-                        if (SUCCEEDED(base_sc->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
-                            base_sc->Release();
-                            result = sc;
-                            break;
-                        }
-                        base_sc->Release();
-                    }
-                }
-            }
+    for (size_t offset = 0; offset <= max_scan - sizeof(void*); offset += sizeof(void*)) {
+        const auto candidate_addr = (uintptr_t)base_obj + offset;
+        if (IsBadReadPtr((void*)candidate_addr, sizeof(void*))) {
+            break;
         }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        result = nullptr;
+
+        void* candidate = *(void**)candidate_addr;
+        auto sc = try_query_swapchain_seh(candidate);
+        if (sc != nullptr) {
+            return sc;
+        }
     }
-    return result;
+
+    return nullptr;
 }
 
 static IDXGISwapChain3* get_engine_swapchain() {
     try {
+        // 1. Output layer present_state & output_layer
         auto output_layer = sdk::renderer::get_output_layer();
         if (output_layer != nullptr && !IsBadReadPtr(output_layer, sizeof(void*))) {
             auto present_state = output_layer->get_present_state();
@@ -95,10 +118,29 @@ static IDXGISwapChain3* get_engine_swapchain() {
                 }
             }
 
-            // Also scan output_layer directly
             auto sc = scan_for_swapchain_seh(output_layer, 0x800);
             if (sc != nullptr) {
                 spdlog::info("D3D12Hook: Found real engine swapchain in output_layer: {:x}", (uintptr_t)sc);
+                return sc;
+            }
+        }
+
+        // 2. Renderer singleton
+        auto renderer = sdk::renderer::get_renderer();
+        if (renderer != nullptr && !IsBadReadPtr(renderer, sizeof(void*))) {
+            auto sc = scan_for_swapchain_seh(renderer, 0x4000);
+            if (sc != nullptr) {
+                spdlog::info("D3D12Hook: Found real engine swapchain in renderer: {:x}", (uintptr_t)sc);
+                return sc;
+            }
+        }
+
+        // 3. Root layer
+        auto root = sdk::renderer::get_root_layer();
+        if (root != nullptr && !IsBadReadPtr(root, sizeof(void*))) {
+            auto sc = scan_for_swapchain_seh(root, 0x800);
+            if (sc != nullptr) {
+                spdlog::info("D3D12Hook: Found real engine swapchain in root_layer: {:x}", (uintptr_t)sc);
                 return sc;
             }
         }
@@ -514,28 +556,6 @@ bool D3D12Hook::hook() {
             swap_chain_desc1.Stereo = FALSE;
         };
 
-        // On Darwin / Wine, locate the real game window to avoid creating naked dummy windows
-        // that lack CAMetalLayer drawables in D3DMetal.
-        HWND real_game_window = nullptr;
-        if (g_framework != nullptr && g_framework->get_window() != nullptr) {
-            real_game_window = g_framework->get_window();
-        }
-        if (real_game_window == nullptr) {
-            EnumWindows([](HWND h, LPARAM lp) -> BOOL {
-                DWORD pid = 0;
-                GetWindowThreadProcessId(h, &pid);
-                if (pid == GetCurrentProcessId() && IsWindowVisible(h)) {
-                    char cn[128]{};
-                    GetClassNameA(h, cn, sizeof(cn));
-                    if (strcmp(cn, "REFRAMEWORK_DX12_DUMMY") != 0) {
-                        *(HWND*)lp = h;
-                        return FALSE;
-                    }
-                }
-                return TRUE;
-            }, (LPARAM)&real_game_window);
-        }
-
         std::vector<std::function<bool ()>> swapchain_attempts;
 
         // Attempt: Composition (cleanest on Windows, no HWND; skip on Darwin where it is unsupported)
@@ -545,15 +565,9 @@ bool D3D12Hook::hook() {
             });
         }
 
-        // Attempt: Real game window if already active
-        if (real_game_window != nullptr) {
-            swapchain_attempts.push_back([&]() {
-                spdlog::info("D3D12Hook: Attempting swapchain on real game window {:x}", (uintptr_t)real_game_window);
-                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, real_game_window, &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
-            });
-        }
-
-        // Attempt: Lightweight dummy window
+        // Attempt: Lightweight offscreen dummy window
+        // Note: We NEVER pass the real game window to dummy swapchain creation on any platform,
+        // as attaching and releasing a dummy swapchain destroys the window's Metal/DXGI surface.
         swapchain_attempts.push_back([&]() {
             init_dummy_window();
             if (hwnd == nullptr) return false;
@@ -604,6 +618,19 @@ bool D3D12Hook::hook() {
 
             if (wc.lpszClassName != nullptr) {
                 ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+            }
+
+            if (command_queue != nullptr) {
+                command_queue->Release();
+                command_queue = nullptr;
+            }
+            if (device != nullptr) {
+                device->Release();
+                device = nullptr;
+            }
+            if (factory != nullptr) {
+                factory->Release();
+                factory = nullptr;
             }
 
             // On Darwin, do not panic if dummy swapchain creation fails.
@@ -755,11 +782,26 @@ bool D3D12Hook::hook() {
     // Release dummy objects and destroy dummy window BEFORE installing hooks!
     // This guarantees Wine/winemac.drv Cocoa window destruction completes cleanly
     // without deadlocking against intercepted rendering calls on the game's threads.
-    command_queue->Release();
-    swap_chain1->Release();
-    swap_chain->Release();
-    device->Release();
-    factory->Release();
+    if (command_queue != nullptr) {
+        command_queue->Release();
+        command_queue = nullptr;
+    }
+    if (swap_chain1 != nullptr) {
+        swap_chain1->Release();
+        swap_chain1 = nullptr;
+    }
+    if (swap_chain != nullptr) {
+        swap_chain->Release();
+        swap_chain = nullptr;
+    }
+    if (device != nullptr) {
+        device->Release();
+        device = nullptr;
+    }
+    if (factory != nullptr) {
+        factory->Release();
+        factory = nullptr;
+    }
 
     if (hwnd) {
         ::DestroyWindow(hwnd);
