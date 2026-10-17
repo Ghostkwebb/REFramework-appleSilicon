@@ -14,6 +14,7 @@
 #include "utility/FunctionHookMinHook.hpp"
 
 #include <sdk/GameIdentity.hpp>
+#include "utility/DarwinHost.hpp"
 #include "REFramework.hpp"
 #include "ExceptionHandler.hpp"
 
@@ -37,6 +38,28 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         code == 0x80000004)   // EXCEPTION_SINGLE_STEP
     {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Dynamic AOT stub / UD2 recovery:
+    // In RE Engine games, uncompiled generic delegates or stripped stubs contain a 2-byte UD2 (0x0F, 0x0B).
+    // Instead of terminating the process when a worker thread calls an uncompiled stub,
+    // simulate a `ret` instruction by popping the return address off the stack and resuming the caller.
+    if (code == 0xC000001D && ei->ContextRecord != nullptr) { // STATUS_ILLEGAL_INSTRUCTION
+        const auto rip = (uintptr_t)ei->ContextRecord->Rip;
+        const auto rsp = (uintptr_t)ei->ContextRecord->Rsp;
+
+        if (!IsBadReadPtr((void*)rip, 2) && !IsBadReadPtr((void*)rsp, sizeof(void*))) {
+            const auto opcode = *(const uint16_t*)rip;
+            if (opcode == 0x0B0F) { // 0x0F, 0x0B in little-endian (UD2)
+                const auto retaddr = *(const uintptr_t*)rsp;
+                if (!IsBadReadPtr((void*)retaddr, sizeof(void*))) {
+                    spdlog::warn("global_exception_handler: Dynamically recovered from uncompiled UD2 stub at 0x{:X}, returning to caller 0x{:X}", rip, retaddr);
+                    ei->ContextRecord->Rip = retaddr;
+                    ei->ContextRecord->Rsp = rsp + sizeof(void*);
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+            }
+        }
     }
 
     static std::recursive_mutex mtx{};
@@ -229,7 +252,9 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         l->flush();
     }
 
-    if (s_previous_filter != nullptr) {
+    // On Wine / CrossOver / Proton, Capcom's external CrashReport.exe is unsupported and crashes
+    // immediately with a winedbg popup, freezing the game even when the engine is still rendering.
+    if (!utility::DarwinHost::is_wine() && s_previous_filter != nullptr) {
         return s_previous_filter(ei);
     }
 
