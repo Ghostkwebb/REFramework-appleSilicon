@@ -47,8 +47,7 @@ static IDXGISwapChain3* try_query_swapchain_seh(void* candidate) {
     }
 
     const auto ptr_val = (uintptr_t)candidate;
-    // On macOS / Rosetta, native Objective-C / Metal heap objects reside in 0x600000000000+
-    if ((ptr_val & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+    if (utility::DarwinHost::is_darwin() && utility::DarwinHost::is_host_darwin_pointer(ptr_val)) {
         return nullptr;
     }
 
@@ -57,8 +56,13 @@ static IDXGISwapChain3* try_query_swapchain_seh(void* candidate) {
         return nullptr;
     }
 
+    const auto vtable_val = (uintptr_t)vtable;
+    if (utility::DarwinHost::is_darwin() && utility::DarwinHost::is_host_darwin_pointer(vtable_val)) {
+        return nullptr;
+    }
+
     const auto fn = (uintptr_t)vtable[0];
-    if ((fn & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+    if (utility::DarwinHost::is_darwin() && utility::DarwinHost::is_host_darwin_pointer(fn)) {
         return nullptr;
     }
 
@@ -1000,8 +1004,8 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         d3d12->m_command_queue = nullptr;
     }
 
-    // Dynamic scan of swapchain if command queue not resolved yet
-    if (!utility::DarwinHost::is_valid_command_queue(d3d12->m_command_queue)) {
+    // Dynamic scan of swapchain if command queue not resolved yet (skip on Darwin where swapchain holds native host objects)
+    if (!utility::DarwinHost::is_darwin() && !utility::DarwinHost::is_valid_command_queue(d3d12->m_command_queue)) {
         d3d12->m_command_queue = nullptr;
         for (size_t off = sizeof(void*); off < 512 * sizeof(void*); off += sizeof(void*)) {
             const auto addr = (uintptr_t)swap_chain + off;

@@ -112,7 +112,7 @@ uint32_t DarwinHost::find_command_queue_offset(void* swapchain, IUnknown* comman
         return 0;
     }
 
-    // 1. Dynamic scan: If command_queue is known, scan swapchain memory for the exact pointer or interface match
+    // 1. Dynamic scan: If command_queue is known, scan swapchain memory for the exact pointer match
     if (command_queue != nullptr) {
         for (uint32_t off = 0; off <= 0x800 - sizeof(void*); off += sizeof(void*)) {
             const auto addr = (uintptr_t)swapchain + off;
@@ -123,12 +123,6 @@ uint32_t DarwinHost::find_command_queue_offset(void* swapchain, IUnknown* comman
             if (cand == (void*)command_queue) {
                 spdlog::info("DarwinHost: Dynamically matched exact command queue at offset 0x{:X}", off);
                 return off;
-            }
-            if (cand != nullptr && !IsBadReadPtr(cand, sizeof(void*))) {
-                if (is_valid_command_queue((ID3D12CommandQueue*)cand)) {
-                    spdlog::info("DarwinHost: Dynamically found valid command queue interface at offset 0x{:X}", off);
-                    return off;
-                }
             }
         }
     }
@@ -174,21 +168,43 @@ intptr_t DarwinHost::calculate_command_queue_delta(void* swapchain, uint32_t off
     return delta;
 }
 
+bool DarwinHost::is_host_darwin_pointer(uintptr_t addr) {
+    if (addr < 0x10000ULL) {
+        return true;
+    }
+    // Native Objective-C / Metal heap objects: 0x600000000000+
+    if ((addr & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+        return true;
+    }
+    // macOS thread stacks: 0x700000000000 - 0x7000ffffffff
+    if ((addr & 0xFFFFFF0000000000ULL) == 0x700000000000ULL) {
+        return true;
+    }
+    // macOS dyld shared cache / system dylibs: 0x7ff800000000+
+    if (addr >= 0x7ff800000000ULL) {
+        return true;
+    }
+    return false;
+}
+
 bool DarwinHost::is_valid_command_queue(ID3D12CommandQueue* queue) {
     if (queue == nullptr || IsBadReadPtr(queue, sizeof(void*))) {
         return false;
     }
     const auto ptr_val = (uintptr_t)queue;
-    // On macOS / Rosetta, native Objective-C / Metal heap objects reside in 0x600000000000+
-    if ((ptr_val & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+    if (is_darwin() && is_host_darwin_pointer(ptr_val)) {
         return false;
     }
-    const auto vtable = *(void***)queue;
+    void** vtable = *(void***)queue;
     if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 10)) {
         return false;
     }
+    const auto vtable_val = (uintptr_t)vtable;
+    if (is_darwin() && is_host_darwin_pointer(vtable_val)) {
+        return false;
+    }
     const auto fn = (uintptr_t)vtable[0];
-    if ((fn & 0xFFFFFF0000000000ULL) == 0x600000000000ULL) {
+    if (is_darwin() && is_host_darwin_pointer(fn)) {
         return false;
     }
     bool ok = false;
