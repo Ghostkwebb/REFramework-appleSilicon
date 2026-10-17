@@ -18,3 +18,6 @@ csharp-api/test/Test/bin
 csharp-api/test/Test/obj
 csharp-api/build/
 
+# Local reference file
+future_reference.md
+

@@ -112,20 +112,39 @@ uint32_t DarwinHost::find_command_queue_offset(void* swapchain, IUnknown* comman
         return 0;
     }
 
-    // In CrossOver / Apple D3DMetal, the swapchain struct consistently places
-    // the command queue at 0x4C8 across D3DMetal versions (upstream PR #1589 & #1847).
+    // 1. Dynamic scan: If command_queue is known, scan swapchain memory for the exact pointer or interface match
+    if (command_queue != nullptr) {
+        for (uint32_t off = 0; off <= 0x800 - sizeof(void*); off += sizeof(void*)) {
+            const auto addr = (uintptr_t)swapchain + off;
+            if (IsBadReadPtr((void*)addr, sizeof(void*))) {
+                break;
+            }
+            auto cand = *(void**)addr;
+            if (cand == (void*)command_queue) {
+                spdlog::info("DarwinHost: Dynamically matched exact command queue at offset 0x{:X}", off);
+                return off;
+            }
+            if (cand != nullptr && !IsBadReadPtr(cand, sizeof(void*))) {
+                if (is_valid_command_queue((ID3D12CommandQueue*)cand)) {
+                    spdlog::info("DarwinHost: Dynamically found valid command queue interface at offset 0x{:X}", off);
+                    return off;
+                }
+            }
+        }
+    }
+
+    // 2. Standard D3DMetal fallback (0x4C8 across GPTK 3/4)
     constexpr uint32_t WINE_D3DMETAL_CQ_OFFSET = 0x4C8;
     const auto d3dmetal_base = (uintptr_t)swapchain + WINE_D3DMETAL_CQ_OFFSET;
     if (!IsBadReadPtr((void*)d3dmetal_base, sizeof(void*))) {
         auto candidate = *(void**)d3dmetal_base;
         if (candidate != nullptr && !IsBadReadPtr(candidate, sizeof(void*))) {
-            spdlog::info("DarwinHost: Using verified D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
+            spdlog::info("DarwinHost: Using verified D3DMetal command queue offset: 0x{:X}", WINE_D3DMETAL_CQ_OFFSET);
             return WINE_D3DMETAL_CQ_OFFSET;
         }
     }
 
-    // Default to the known D3DMetal offset (CrossOver / GPTK)
-    spdlog::warn("DarwinHost: Defaulting to standard D3DMetal command queue offset: 0x{:x}", WINE_D3DMETAL_CQ_OFFSET);
+    spdlog::warn("DarwinHost: Defaulting to standard D3DMetal command queue offset: 0x{:X}", WINE_D3DMETAL_CQ_OFFSET);
     return WINE_D3DMETAL_CQ_OFFSET;
 }
 

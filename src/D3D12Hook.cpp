@@ -41,15 +41,15 @@ static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
     return is_direct;
 }
 
-static IDXGISwapChain3* scan_for_swapchain_seh(void* present_state) {
-    if (present_state == nullptr || IsBadReadPtr(present_state, sizeof(void*))) {
+static IDXGISwapChain3* scan_for_swapchain_seh(void* base_obj, size_t max_scan = 0x800) {
+    if (base_obj == nullptr || IsBadReadPtr(base_obj, sizeof(void*))) {
         return nullptr;
     }
 
     IDXGISwapChain3* result = nullptr;
     __try {
-        for (size_t offset = 0; offset <= 0x200 - sizeof(void*); offset += sizeof(void*)) {
-            const auto candidate_addr = (uintptr_t)present_state + offset;
+        for (size_t offset = 0; offset <= max_scan - sizeof(void*); offset += sizeof(void*)) {
+            const auto candidate_addr = (uintptr_t)base_obj + offset;
             if (IsBadReadPtr((void*)candidate_addr, sizeof(void*))) {
                 break;
             }
@@ -64,6 +64,15 @@ static IDXGISwapChain3* scan_for_swapchain_seh(void* present_state) {
                         result = sc;
                         break;
                     }
+                    IDXGISwapChain* base_sc = nullptr;
+                    if (SUCCEEDED(unk->QueryInterface(IID_PPV_ARGS(&base_sc))) && base_sc != nullptr) {
+                        if (SUCCEEDED(base_sc->QueryInterface(IID_PPV_ARGS(&sc))) && sc != nullptr) {
+                            base_sc->Release();
+                            result = sc;
+                            break;
+                        }
+                        base_sc->Release();
+                    }
                 }
             }
         }
@@ -76,19 +85,22 @@ static IDXGISwapChain3* scan_for_swapchain_seh(void* present_state) {
 static IDXGISwapChain3* get_engine_swapchain() {
     try {
         auto output_layer = sdk::renderer::get_output_layer();
-        if (output_layer == nullptr || IsBadReadPtr(output_layer, sizeof(void*))) {
-            return nullptr;
-        }
+        if (output_layer != nullptr && !IsBadReadPtr(output_layer, sizeof(void*))) {
+            auto present_state = output_layer->get_present_state();
+            if (present_state != nullptr) {
+                auto sc = scan_for_swapchain_seh(present_state, 0x800);
+                if (sc != nullptr) {
+                    spdlog::info("D3D12Hook: Found real engine swapchain in present_state: {:x}", (uintptr_t)sc);
+                    return sc;
+                }
+            }
 
-        auto present_state = output_layer->get_present_state();
-        if (present_state == nullptr) {
-            return nullptr;
-        }
-
-        auto sc = scan_for_swapchain_seh(present_state);
-        if (sc != nullptr) {
-            spdlog::info("D3D12Hook: Found real engine swapchain: {:x}", (uintptr_t)sc);
-            return sc;
+            // Also scan output_layer directly
+            auto sc = scan_for_swapchain_seh(output_layer, 0x800);
+            if (sc != nullptr) {
+                spdlog::info("D3D12Hook: Found real engine swapchain in output_layer: {:x}", (uintptr_t)sc);
+                return sc;
+            }
         }
     } catch (...) {
         spdlog::warn("D3D12Hook: Exception while searching for engine swapchain");
@@ -502,23 +514,61 @@ bool D3D12Hook::hook() {
             swap_chain_desc1.Stereo = FALSE;
         };
 
-        std::vector<std::function<bool ()>> swapchain_attempts{
-            // Attempt 0: Composition (cleanest on Windows, no HWND)
-            [&]() {
-                return !FAILED(factory->CreateSwapChainForComposition(command_queue, &swap_chain_desc1, nullptr, &swap_chain1));
-            },
-            // Attempt 1: Desktop Window (avoids new window creation on systems supporting it)
-            [&]() {
-                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, GetDesktopWindow(), &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
-            },
-            // Attempt 2: Lightweight dummy window
-            [&]() {
-                init_dummy_window();
-                if (hwnd == nullptr) return false;
+        // On Darwin / Wine, locate the real game window to avoid creating naked dummy windows
+        // that lack CAMetalLayer drawables in D3DMetal.
+        HWND real_game_window = nullptr;
+        if (g_framework != nullptr && g_framework->get_window() != nullptr) {
+            real_game_window = g_framework->get_window();
+        }
+        if (real_game_window == nullptr) {
+            EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+                DWORD pid = 0;
+                GetWindowThreadProcessId(h, &pid);
+                if (pid == GetCurrentProcessId() && IsWindowVisible(h)) {
+                    char cn[128]{};
+                    GetClassNameA(h, cn, sizeof(cn));
+                    if (strcmp(cn, "REFRAMEWORK_DX12_DUMMY") != 0) {
+                        *(HWND*)lp = h;
+                        return FALSE;
+                    }
+                }
+                return TRUE;
+            }, (LPARAM)&real_game_window);
+        }
 
-                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, hwnd, &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
-            },
-        };
+        std::vector<std::function<bool ()>> swapchain_attempts;
+
+        // Attempt: Composition (cleanest on Windows, no HWND; skip on Darwin where it is unsupported)
+        if (!utility::DarwinHost::is_darwin()) {
+            swapchain_attempts.push_back([&]() {
+                return !FAILED(factory->CreateSwapChainForComposition(command_queue, &swap_chain_desc1, nullptr, &swap_chain1));
+            });
+        }
+
+        // Attempt: Real game window if already active
+        if (real_game_window != nullptr) {
+            swapchain_attempts.push_back([&]() {
+                spdlog::info("D3D12Hook: Attempting swapchain on real game window {:x}", (uintptr_t)real_game_window);
+                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, real_game_window, &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
+            });
+        }
+
+        // Attempt: Lightweight dummy window
+        swapchain_attempts.push_back([&]() {
+            init_dummy_window();
+            if (hwnd == nullptr) return false;
+
+            return !FAILED(factory->CreateSwapChainForHwnd(command_queue, hwnd, &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
+        });
+
+        // Attempt: Desktop Window - ONLY on native Windows!
+        // CRITICAL: On Darwin / CrossOver / D3DMetal, GetDesktopWindow() has NO CAMetalLayer.
+        // Passing it to CreateSwapChainForHwnd triggers an uncatchable _abort() in D3DMetal (exit 9).
+        if (!utility::DarwinHost::is_darwin()) {
+            swapchain_attempts.push_back([&]() {
+                return !FAILED(factory->CreateSwapChainForHwnd(command_queue, GetDesktopWindow(), &swap_chain_desc1, nullptr, nullptr, &swap_chain1));
+            });
+        }
 
         for (auto i = 0; i < swapchain_attempts.size(); i++) {
             auto& attempt = swapchain_attempts[i];
@@ -554,6 +604,15 @@ bool D3D12Hook::hook() {
 
             if (wc.lpszClassName != nullptr) {
                 ::UnregisterClass(wc.lpszClassName, wc.hInstance);
+            }
+
+            // On Darwin, do not panic if dummy swapchain creation fails.
+            // s_create_swapchain_hook is already armed on the factory and will hook the real
+            // swapchain dynamically as soon as the game engine calls CreateSwapChainForHwnd.
+            if (utility::DarwinHost::is_darwin() && s_create_swapchain_hook != nullptr) {
+                spdlog::info("DarwinHost: Early dummy swapchain creation skipped; standing by for real swapchain intercept");
+                m_hooked = true;
+                return true;
             }
 
             return false;
