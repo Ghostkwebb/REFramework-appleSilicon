@@ -1385,9 +1385,10 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
         const auto menu_key = REFrameworkConfig::get()->get_menu_key()->value();
-        const bool is_menu_key = (w_param == menu_key);
+        // Ignore VK_F10 on Darwin even if previously saved in config (reserved for Metal HUD)
+        const bool is_menu_key = (w_param == menu_key) && !(utility::DarwinHost::is_darwin() && w_param == VK_F10);
         const bool is_darwin_fallback = utility::DarwinHost::is_darwin() &&
-            (w_param == VK_F10 || w_param == VK_OEM_3 || w_param == VK_INSERT || w_param == VK_DELETE);
+            (w_param == VK_OEM_3 || w_param == VK_DELETE || w_param == VK_INSERT);
 
         if ((is_menu_key || is_darwin_fallback) && !m_last_keys[w_param]) {
             std::lock_guard _{m_input_mutex};

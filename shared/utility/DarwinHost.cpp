@@ -221,7 +221,7 @@ bool DarwinHost::is_valid_command_queue(ID3D12CommandQueue* queue) {
 }
 
 uint32_t DarwinHost::get_default_menu_key() {
-    return is_darwin() ? VK_F10 : VK_INSERT;
+    return is_darwin() ? VK_OEM_3 : VK_INSERT;
 }
 
 bool DarwinHost::is_mac_command_key(uint32_t vk_code) {
