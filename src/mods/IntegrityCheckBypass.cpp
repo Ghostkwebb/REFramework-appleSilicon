@@ -1669,7 +1669,7 @@ void validate_job_func(SafetyHookContext& ctx) {
 
 void IntegrityCheckBypass::immediate_patch_re9() {
     const auto& gi = sdk::GameIdentity::get();
-    if (!gi.is_re9() && !gi.is_mhstories3()) {
+    if (gi.tdb_ver() < 82) {
         return;
     }
 
@@ -2180,9 +2180,6 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
     // I then noticed that making these values equal to the frame count always made the clean path trigger, even if the integrity checks were triggered.
     // No patching necessary!
     const auto& gi = sdk::GameIdentity::get();
-    if (gi.is_pragmata() || (!gi.is_re9() && !gi.is_mhstories3())) {
-        return;
-    }
     if (gi.tdb_ver() < 82) {
         return;
     }

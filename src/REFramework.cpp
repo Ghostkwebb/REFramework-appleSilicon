@@ -600,8 +600,8 @@ REFramework::REFramework(HMODULE reframework_module)
             IntegrityCheckBypass::immediate_patch_dd2();
         }
 
-        if (!gi.is_pragmata() && (gi.is_re9() || gi.is_mhstories3())) {
-            // Fixes new code added in RE9 / MHStories3.
+        if (gi.tdb_ver() >= 82) {
+            // Fixes new code added in RE9 / MHStories3 / PRAGMATA (TDB >= 82).
             IntegrityCheckBypass::immediate_patch_re9();
         }
 
