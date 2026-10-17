@@ -18,6 +18,62 @@
 #include "REFramework.hpp"
 #include "ExceptionHandler.hpp"
 
+static bool is_ud2_instruction(uintptr_t rip) {
+    __try {
+        if (rip != 0 && *(const uint16_t*)rip == 0x0B0F) { // 0x0F, 0x0B in little-endian (UD2)
+            return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return false;
+}
+
+static uintptr_t read_stack_pointer(uintptr_t rsp) {
+    __try {
+        if (rsp != 0) {
+            return *(const uintptr_t*)rsp;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+    return 0;
+}
+
+// First-priority Vectored Exception Handler (VEH):
+// Runs at Step 1 before Wine ever attempts SEH stack unwinding (RtlVirtualUnwind2).
+// Catches uncompiled IL2CPP generic delegate stubs and stripped AOT stubs (UD2)
+// directly, preventing Wine stack limit faults (invalid frame outside stack limits).
+LONG WINAPI reframework::vectored_exception_handler(struct _EXCEPTION_POINTERS* ei) {
+    if (ei == nullptr || ei->ExceptionRecord == nullptr || ei->ContextRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto code = ei->ExceptionRecord->ExceptionCode;
+    if (code == 0xC000001D) { // STATUS_ILLEGAL_INSTRUCTION
+        const auto rip = (uintptr_t)ei->ContextRecord->Rip;
+        const auto rsp = (uintptr_t)ei->ContextRecord->Rsp;
+
+        if (is_ud2_instruction(rip)) {
+            const auto retaddr = read_stack_pointer(rsp);
+            // If caller pushed a valid return address within a loaded module, simulate a ret:
+            if (retaddr != 0 && utility::get_module_within(retaddr).has_value()) {
+                spdlog::warn("vectored_exception_handler: Dynamically recovered from uncompiled UD2 stub at 0x{:X}, returning to caller 0x{:X}", rip, retaddr);
+                ei->ContextRecord->Rip = retaddr;
+                ei->ContextRecord->Rsp = rsp + sizeof(void*);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            } else {
+                // Inline UD2 trap: advance instruction pointer past the 2-byte UD2 opcode
+                spdlog::warn("vectored_exception_handler: Dynamically skipped inline UD2 trap at 0x{:X}", rip);
+                ei->ContextRecord->Rip = rip + 2;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static LPTOP_LEVEL_EXCEPTION_FILTER s_previous_filter = nullptr;
 
 LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei) {
@@ -40,24 +96,22 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // Dynamic AOT stub / UD2 recovery:
-    // In RE Engine games, uncompiled generic delegates or stripped stubs contain a 2-byte UD2 (0x0F, 0x0B).
-    // Instead of terminating the process when a worker thread calls an uncompiled stub,
-    // simulate a `ret` instruction by popping the return address off the stack and resuming the caller.
+    // Dynamic AOT stub / UD2 recovery (fallback in case not caught at VEH level):
     if (code == 0xC000001D && ei->ContextRecord != nullptr) { // STATUS_ILLEGAL_INSTRUCTION
         const auto rip = (uintptr_t)ei->ContextRecord->Rip;
         const auto rsp = (uintptr_t)ei->ContextRecord->Rsp;
 
-        if (!IsBadReadPtr((void*)rip, 2) && !IsBadReadPtr((void*)rsp, sizeof(void*))) {
-            const auto opcode = *(const uint16_t*)rip;
-            if (opcode == 0x0B0F) { // 0x0F, 0x0B in little-endian (UD2)
-                const auto retaddr = *(const uintptr_t*)rsp;
-                if (!IsBadReadPtr((void*)retaddr, sizeof(void*))) {
-                    spdlog::warn("global_exception_handler: Dynamically recovered from uncompiled UD2 stub at 0x{:X}, returning to caller 0x{:X}", rip, retaddr);
-                    ei->ContextRecord->Rip = retaddr;
-                    ei->ContextRecord->Rsp = rsp + sizeof(void*);
-                    return EXCEPTION_CONTINUE_EXECUTION;
-                }
+        if (is_ud2_instruction(rip)) {
+            const auto retaddr = read_stack_pointer(rsp);
+            if (retaddr != 0 && utility::get_module_within(retaddr).has_value()) {
+                spdlog::warn("global_exception_handler: Dynamically recovered from uncompiled UD2 stub at 0x{:X}, returning to caller 0x{:X}", rip, retaddr);
+                ei->ContextRecord->Rip = retaddr;
+                ei->ContextRecord->Rsp = rsp + sizeof(void*);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            } else {
+                spdlog::warn("global_exception_handler: Dynamically skipped inline UD2 trap at 0x{:X}", rip);
+                ei->ContextRecord->Rip = rip + 2;
+                return EXCEPTION_CONTINUE_EXECUTION;
             }
         }
     }
@@ -284,6 +338,10 @@ void reframework::setup_exception_handler() {
                 l->flush();
             }
         });
+
+        // Register Vectored Exception Handler to intercept UD2 stubs before stack unwinding
+        AddVectoredExceptionHandler(1, vectored_exception_handler);
+        spdlog::info("Registered Vectored Exception Handler successfully");
 
         // Set our unhandled exception filter first and save any existing filter
         s_previous_filter = SetUnhandledExceptionFilter(global_exception_handler);
