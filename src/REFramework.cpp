@@ -2086,7 +2086,7 @@ void REFramework::draw_ui() {
     ImGui::Begin(REF_NAME.c_str(), &is_open, ImGuiWindowFlags_NoCollapse);
     const auto* main_window = ImGui::GetCurrentWindow();
     if (utility::DarwinHost::is_darwin()) {
-        ImGui::Text("Menu Key: F10 / Fn+F10 / ~ (Tilde)");
+        ImGui::Text("Menu Key: ~ (Tilde) / Fn+Delete");
     } else {
         ImGui::Text("Default Menu Key: Insert");
     }
