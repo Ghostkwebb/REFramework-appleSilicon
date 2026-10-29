@@ -438,48 +438,17 @@ void Graphics::on_present() {
     }
 
     if (g_framework->is_dx11()) {
-        const auto& hook = g_framework->get_d3d11_hook();
-        const auto swapchain = hook->get_swap_chain();
-
-        if (swapchain == nullptr) {
-            return;
+        const auto width = g_framework->get_rendertarget_width_d3d11();
+        const auto height = g_framework->get_rendertarget_height_d3d11();
+        if (width > 0 && height > 0) {
+            m_backbuffer_size = std::array<uint32_t, 2>{width, height};
         }
-
-        DXGI_SWAP_CHAIN_DESC desc{};
-        if (SUCCEEDED(swapchain->GetDesc(&desc)) && desc.BufferDesc.Width > 0 && desc.BufferDesc.Height > 0) {
-            m_backbuffer_size = std::array<uint32_t, 2>{desc.BufferDesc.Width, desc.BufferDesc.Height};
-            return;
-        }
-
-        Microsoft::WRL::ComPtr<ID3D11Texture2D> backbuffer{};
-        if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) || backbuffer == nullptr) {
-            return;
-        }
-
-        D3D11_TEXTURE2D_DESC tex_desc{};
-        backbuffer->GetDesc(&tex_desc);
-        m_backbuffer_size = std::array<uint32_t, 2>{tex_desc.Width, tex_desc.Height};
     } else {
-        const auto& hook = g_framework->get_d3d12_hook();
-        const auto swapchain = hook->get_swap_chain();
-
-        if (swapchain == nullptr) {
-            return;
+        const auto width = g_framework->get_rendertarget_width_d3d12();
+        const auto height = g_framework->get_rendertarget_height_d3d12();
+        if (width > 0 && height > 0) {
+            m_backbuffer_size = std::array<uint32_t, 2>{width, height};
         }
-
-        DXGI_SWAP_CHAIN_DESC desc{};
-        if (SUCCEEDED(swapchain->GetDesc(&desc)) && desc.BufferDesc.Width > 0 && desc.BufferDesc.Height > 0) {
-            m_backbuffer_size = std::array<uint32_t, 2>{desc.BufferDesc.Width, desc.BufferDesc.Height};
-            return;
-        }
-
-        Microsoft::WRL::ComPtr<ID3D12Resource> backbuffer{};
-        if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) || backbuffer == nullptr) {
-            return;
-        }
-
-        const auto desc_res = backbuffer->GetDesc();
-        m_backbuffer_size = std::array<uint32_t, 2>{(uint32_t)desc_res.Width, (uint32_t)desc_res.Height};
     }
 }
 
