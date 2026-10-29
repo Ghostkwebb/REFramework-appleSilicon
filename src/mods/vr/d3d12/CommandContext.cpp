@@ -1,5 +1,6 @@
 #include <spdlog/spdlog.h>
 #include <utility/String.hpp>
+#include <utility/DarwinHost.hpp>
 
 #include "REFramework.hpp"
 
@@ -250,6 +251,17 @@ void CommandContext::execute() {
         command_queue->Signal(this->fence.Get(), next_fence);
         this->waiting_for_fence = true;
         this->has_commands = false;
+
+        // On Darwin / D3DMetal, synchronously wait for command buffer execution to complete
+        // before presentation to ensure the backbuffer IOSurface is not modified while write-locked.
+        if (utility::DarwinHost::is_darwin()) {
+            if (this->fence != nullptr && this->fence->GetCompletedValue() < this->fence_value) {
+                WaitForSingleObject(this->fence_event, 50);
+            }
+            ResetEvent(this->fence_event);
+            this->waiting_for_fence = false;
+            this->cmd_allocator->Reset();
+        }
     }
 }
 }

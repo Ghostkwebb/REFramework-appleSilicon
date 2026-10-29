@@ -273,8 +273,18 @@ void WINAPI D3D12Hook::execute_command_lists(ID3D12CommandQueue* queue, UINT num
         }
     }
 
-    auto orig = s_execute_command_lists_hook->get_original<decltype(D3D12Hook::execute_command_lists)*>();
-    orig(queue, num_command_lists, command_lists);
+    auto hook = s_execute_command_lists_hook.get();
+    if (hook == nullptr) {
+        queue->ExecuteCommandLists(num_command_lists, command_lists);
+        return;
+    }
+
+    auto orig = hook->get_original<decltype(D3D12Hook::execute_command_lists)*>();
+    if (orig != nullptr) {
+        orig(queue, num_command_lists, command_lists);
+    } else {
+        queue->ExecuteCommandLists(num_command_lists, command_lists);
+    }
 }
 
 void D3D12Hook::hook_streamline(HMODULE dlssg_module) try {
@@ -496,6 +506,7 @@ bool D3D12Hook::hook() {
     }
 
     s_command_queue_vtable = *(void***)command_queue;
+    command_queue->Release();
 
     HWND hwnd = 0;
     WNDCLASSEX wc{};
@@ -985,7 +996,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
     d3d12->m_inside_present = true;
     d3d12->m_swap_chain = swap_chain;
 
-    {
+    if (d3d12->m_device == nullptr) {
         Microsoft::WRL::ComPtr<ID3D12Device4> temp_device{};
         swap_chain->GetDevice(IID_PPV_ARGS(&temp_device));
         d3d12->m_device = temp_device.Get();
