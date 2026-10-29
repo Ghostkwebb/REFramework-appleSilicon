@@ -1161,7 +1161,7 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
 
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
-    spdlog::info("D3D12 resize buffers called");
+    spdlog::info("D3D12 resize buffers called from {:p} (game module: {:p})", __builtin_return_address(0), (void*)GetModuleHandle(nullptr));
     spdlog::info(" Parameters: buffer_count {} width {} height {} new_format {} swap_chain_flags {}", buffer_count, width, height, new_format, swap_chain_flags);
 
     // Walk the callstack and print out module names

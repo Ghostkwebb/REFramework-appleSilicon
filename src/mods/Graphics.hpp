@@ -29,7 +29,6 @@ public:
     void on_frame() override;
     void on_draw_ui() override;
     void on_present() override;
-    void on_device_reset() override;
 
     void on_pre_application_entry(void* entry, const char* name, size_t hash) override;
     void on_application_entry(void* entry, const char* name, size_t hash) override;

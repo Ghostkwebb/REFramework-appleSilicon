@@ -1,5 +1,6 @@
 #include <utility/Module.hpp>
 #include <utility/Scan.hpp>
+#include <utility/DarwinHost.hpp>
 
 #include <sdk/GameIdentity.hpp>
 #include <sdk/SceneManager.hpp>
@@ -428,15 +429,7 @@ void Graphics::on_draw_ui() {
     }
 }
 
-void Graphics::on_device_reset() {
-    m_backbuffer_size.reset();
-}
-
 void Graphics::on_present() {
-    if (m_backbuffer_size.has_value()) {
-        return;
-    }
-
     if (g_framework->is_dx11()) {
         const auto width = g_framework->get_rendertarget_width_d3d11();
         const auto height = g_framework->get_rendertarget_height_d3d11();
@@ -660,6 +653,10 @@ bool Graphics::on_pre_gui_draw_element(REComponent* gui_element, void* primitive
 // if we have invalid structure offsets. Writing
 // invalid data to that will break windowing behavior.
 void correct_window_size_if_needed(REManagedObject* scene_view) {
+    if (utility::DarwinHost::is_darwin() || sdk::GameIdentity::get().is_pragmata()) {
+        return;
+    }
+
     auto window = sdk::via::sv_window(scene_view);
 
     if (window == nullptr) {
@@ -702,7 +699,8 @@ void correct_window_size_if_needed(REManagedObject* scene_view) {
 }
 
 void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
-    if ((sdk::GameIdentity::get().is_sf6() || sdk::GameIdentity::get().is_dmc5() || sdk::GameIdentity::get().tdb_ver() >= 73) && m_ultrawide_fix->value()) {
+    if (!utility::DarwinHost::is_darwin() && !sdk::GameIdentity::get().is_pragmata() &&
+        (sdk::GameIdentity::get().is_sf6() || sdk::GameIdentity::get().is_dmc5() || sdk::GameIdentity::get().tdb_ver() >= 73) && m_ultrawide_fix->value()) {
         correct_window_size_if_needed(scene_view);
     }
 
