@@ -34,6 +34,7 @@ bool CommandContext::setup(const wchar_t* name) {
     }
     
     this->cmd_list->SetName(name);
+    this->cmd_list->Close(); // Keep closed until wait() prepares for recording
 
     if (FAILED(device->CreateFence(this->fence_value, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&this->fence)))) {
         spdlog::error("[VR] Failed to create fence for {}", utility::narrow(name));
@@ -48,36 +49,58 @@ bool CommandContext::setup(const wchar_t* name) {
 
 void CommandContext::reset() {
     std::scoped_lock _{this->mtx};
-    this->wait(2000);
-    //this->on_post_present(VR::get().get());
+
+    if (this->fence_event && this->waiting_for_fence) {
+        if (this->fence != nullptr && this->fence->GetCompletedValue() < this->fence_value) {
+            WaitForSingleObject(this->fence_event, 2000);
+        }
+        ResetEvent(this->fence_event);
+        this->waiting_for_fence = false;
+    }
+
+    if (this->cmd_list != nullptr) {
+        this->cmd_list->Close();
+    }
 
     this->cmd_allocator.Reset();
     this->cmd_list.Reset();
     this->fence.Reset();
     this->fence_value = 0;
-    CloseHandle(this->fence_event);
-    this->fence_event = 0;
+    if (this->fence_event != 0 && this->fence_event != INVALID_HANDLE_VALUE) {
+        CloseHandle(this->fence_event);
+        this->fence_event = 0;
+    }
     this->waiting_for_fence = false;
+    this->has_commands = false;
 }
 
 void CommandContext::wait(uint32_t ms) {
     std::scoped_lock _{this->mtx};
 
-	if (this->fence_event && this->waiting_for_fence) {
+    if (this->fence_event && this->waiting_for_fence) {
         if (this->fence != nullptr && this->fence->GetCompletedValue() < this->fence_value) {
             WaitForSingleObject(this->fence_event, ms);
         }
         ResetEvent(this->fence_event);
         this->waiting_for_fence = false;
+    }
+
+    if (this->cmd_list != nullptr) {
+        this->cmd_list->Close();
+    }
+
+    if (this->cmd_allocator != nullptr) {
         if (FAILED(this->cmd_allocator->Reset())) {
             spdlog::error("[VR] Failed to reset command allocator for {}", utility::narrow(this->internal_name));
         }
+    }
 
+    if (this->cmd_list != nullptr && this->cmd_allocator != nullptr) {
         if (FAILED(this->cmd_list->Reset(this->cmd_allocator.Get(), nullptr))) {
             spdlog::error("[VR] Failed to reset command list for {}", utility::narrow(this->internal_name));
         }
-        this->has_commands = false;
     }
+    this->has_commands = false;
 }
 
 void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {

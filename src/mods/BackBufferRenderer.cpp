@@ -1,3 +1,4 @@
+#include <utility/DarwinHost.hpp>
 #include "BackBufferRenderer.hpp"
 
 std::shared_ptr<BackBufferRenderer>& BackBufferRenderer::get() {
@@ -7,9 +8,11 @@ std::shared_ptr<BackBufferRenderer>& BackBufferRenderer::get() {
 
 std::optional<std::string> BackBufferRenderer::on_initialize_d3d_thread() {
     if (g_framework->is_dx12()) {
-        for (auto& context : m_d3d12.command_contexts) {
-            context = std::make_unique<d3d12::CommandContext>();
-            context->setup(L"BackBufferRenderer D3D12 Command Context");
+        if (!utility::DarwinHost::is_darwin()) {
+            for (auto& context : m_d3d12.command_contexts) {
+                context = std::make_unique<d3d12::CommandContext>();
+                context->setup(L"BackBufferRenderer D3D12 Command Context");
+            }
         }
 
         auto swapchain = g_framework->get_d3d12_hook()->get_swap_chain();
