@@ -506,7 +506,6 @@ bool D3D12Hook::hook() {
     }
 
     s_command_queue_vtable = *(void***)command_queue;
-    command_queue->Release();
 
     HWND hwnd = 0;
     WNDCLASSEX wc{};
