@@ -684,18 +684,54 @@ bool Graphics::on_pre_gui_draw_element(REComponent* gui_element, void* primitive
     return true;
 }
 
-void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
-    if (m_ultrawide_fix->value()) {
-        auto window = sdk::via::sv_window(scene_view);
+// The purpose of this is to not correct the borderless size
+// if we have invalid structure offsets. Writing
+// invalid data to that will break windowing behavior.
+void correct_window_size_if_needed(REManagedObject* scene_view) {
+    auto window = sdk::via::sv_window(scene_view);
 
-        if (window != nullptr) {
-            const auto win_w = (float)sdk::via::window_width(window);
-            const auto win_h = (float)sdk::via::window_height(window);
-            if (win_w > 0.0f && win_h > 0.0f) {
-                sdk::via::window_borderless_w(window) = win_w;
-                sdk::via::window_borderless_h(window) = win_h;
-            }
-        }
+    if (window == nullptr) {
+        return;
+    }
+
+    const auto width = sdk::via::window_width(window);
+    const auto height = sdk::via::window_height(window);
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    auto& bw = sdk::via::window_borderless_w(window);
+    auto& bh = sdk::via::window_borderless_h(window);
+
+    // Reject obviously invalid values.
+    if (!std::isfinite(bw) || !std::isfinite(bh)) {
+        return;
+    }
+
+    constexpr float min_width = 320.0f;
+    constexpr float min_height = 200.0f;
+    constexpr float max_dimension = 16384.0f;
+
+    if (bw < min_width || bh < min_height ||
+        bw > max_dimension || bh > max_dimension) {
+        return;
+    }
+
+    const float aspect_ratio = bw / bh;
+
+    // Broad enough for nearly all conventional display configurations.
+    if (aspect_ratio < 0.5f || aspect_ratio > 4.0f) {
+        return;
+    }
+
+    bw = static_cast<float>(width);
+    bh = static_cast<float>(height);
+}
+
+void Graphics::on_view_get_size(REManagedObject* scene_view, float* result) {
+    if ((sdk::GameIdentity::get().is_sf6() || sdk::GameIdentity::get().is_dmc5() || sdk::GameIdentity::get().tdb_ver() >= 73) && m_ultrawide_fix->value()) {
+        correct_window_size_if_needed(scene_view);
     }
 
     if (!m_force_render_res_to_window->value() || !m_backbuffer_size.has_value()) {
@@ -807,15 +843,7 @@ void Graphics::do_ultrawide_fix() {
     }
 
     // Keep window borderless size synced with window size to prevent mouse cursor clamping/offset
-    auto window = sdk::via::sv_window(main_view);
-    if (window != nullptr) {
-        const auto win_w = (float)sdk::via::window_width(window);
-        const auto win_h = (float)sdk::via::window_height(window);
-        if (win_w > 0.0f && win_h > 0.0f) {
-            sdk::via::window_borderless_w(window) = win_w;
-            sdk::via::window_borderless_h(window) = win_h;
-        }
-    }
+    correct_window_size_if_needed(main_view);
 
     // This disables any kind of pillarboxing and letterboxing.
     // This cannot be directly restored once applied.
