@@ -2,6 +2,7 @@
 
 #include "Mod.hpp"
 #include "utility/FunctionHook.hpp"
+#include "utility/DarwinHost.hpp"
 
 #include <sdk/Renderer.hpp>
 
@@ -116,6 +117,11 @@ private:
     
     std::optional<std::string> hook_render_layer(RenderLayerHook<sdk::renderer::RenderLayer>& hook);
     std::optional<std::string> hook_render_layers() {
+        if (utility::DarwinHost::is_darwin()) {
+            spdlog::info("Hooks: Skipping render layer hooks on Darwin to prevent D3DMetal timeline stalls");
+            return std::nullopt;
+        }
+
         if (auto error = hook_render_layer(m_layer_hooks.overlay); error.has_value()) {
             return error;
         }

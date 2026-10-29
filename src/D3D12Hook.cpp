@@ -218,6 +218,9 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
         if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue))) && queue != nullptr) {
             spdlog::info("D3D12Hook: Captured real game command queue from create_swapchain: {:x}", (uintptr_t)queue.Get());
             s_captured_command_queue = queue;
+            if (utility::DarwinHost::is_darwin() && s_execute_command_lists_hook != nullptr) {
+                s_execute_command_lists_hook.reset();
+            }
         }
     }
 
@@ -263,6 +266,11 @@ void WINAPI D3D12Hook::execute_command_lists(ID3D12CommandQueue* queue, UINT num
     if (s_captured_command_queue == nullptr && is_direct_command_queue_seh(queue)) {
         s_captured_command_queue = queue;
         spdlog::info("D3D12Hook: Captured direct game command queue via ExecuteCommandLists: {:x}", (uintptr_t)queue);
+        if (utility::DarwinHost::is_darwin() && s_execute_command_lists_hook != nullptr) {
+            s_execute_command_lists_hook.reset();
+            queue->ExecuteCommandLists(num_command_lists, command_lists);
+            return;
+        }
     }
 
     auto orig = s_execute_command_lists_hook->get_original<decltype(D3D12Hook::execute_command_lists)*>();
@@ -844,14 +852,16 @@ void D3D12Hook::hook_impl() {
     m_present_hook = std::make_unique<PointerHook>(&present_fn, &D3D12Hook::present);
 
     if (s_execute_command_lists_hook == nullptr && s_command_queue_vtable != nullptr) {
-        try {
-            if (!IsBadReadPtr(&s_command_queue_vtable[10], sizeof(void*)) && s_command_queue_vtable[10] != nullptr) {
-                auto& exec_fn = s_command_queue_vtable[10];
-                s_execute_command_lists_hook = std::make_unique<PointerHook>(&exec_fn, &D3D12Hook::execute_command_lists);
-                spdlog::info("D3D12Hook: Hooked ID3D12CommandQueue::ExecuteCommandLists");
+        if (!utility::DarwinHost::is_darwin() || s_captured_command_queue == nullptr) {
+            try {
+                if (!IsBadReadPtr(&s_command_queue_vtable[10], sizeof(void*)) && s_command_queue_vtable[10] != nullptr) {
+                    auto& exec_fn = s_command_queue_vtable[10];
+                    s_execute_command_lists_hook = std::make_unique<PointerHook>(&exec_fn, &D3D12Hook::execute_command_lists);
+                    spdlog::info("D3D12Hook: Hooked ID3D12CommandQueue::ExecuteCommandLists");
+                }
+            } catch (const std::exception& e) {
+                spdlog::warn("D3D12Hook: Failed to hook ExecuteCommandLists: {}", e.what());
             }
-        } catch (const std::exception& e) {
-            spdlog::warn("D3D12Hook: Failed to hook ExecuteCommandLists: {}", e.what());
         }
     }
 
@@ -1098,12 +1108,13 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     auto result = S_OK;
     
-    if (!d3d12->m_ignore_next_present) {
+    if (utility::DarwinHost::is_darwin() || !d3d12->m_ignore_next_present) {
         result = present_fn(swap_chain, sync_interval, flags, r9);
 
         if (result != S_OK) {
             spdlog::error("Present failed: {:x}", result);
         }
+        d3d12->m_ignore_next_present = false;
     } else {
         d3d12->m_ignore_next_present = false;
     }

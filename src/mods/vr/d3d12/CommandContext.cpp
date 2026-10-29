@@ -63,7 +63,9 @@ void CommandContext::wait(uint32_t ms) {
     std::scoped_lock _{this->mtx};
 
 	if (this->fence_event && this->waiting_for_fence) {
-        WaitForSingleObject(this->fence_event, ms);
+        if (this->fence != nullptr && this->fence->GetCompletedValue() < this->fence_value) {
+            WaitForSingleObject(this->fence_event, ms);
+        }
         ResetEvent(this->fence_event);
         this->waiting_for_fence = false;
         if (FAILED(this->cmd_allocator->Reset())) {
@@ -243,8 +245,9 @@ void CommandContext::execute() {
         auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
         ID3D12CommandList* const cmd_lists[] = {this->cmd_list.Get()};
         command_queue->ExecuteCommandLists(1, cmd_lists);
-        command_queue->Signal(this->fence.Get(), ++this->fence_value);
-        this->fence->SetEventOnCompletion(this->fence_value, this->fence_event);
+        const auto next_fence = ++this->fence_value;
+        this->fence->SetEventOnCompletion(next_fence, this->fence_event);
+        command_queue->Signal(this->fence.Get(), next_fence);
         this->waiting_for_fence = true;
         this->has_commands = false;
     }

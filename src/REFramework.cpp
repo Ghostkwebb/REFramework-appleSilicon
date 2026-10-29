@@ -1184,6 +1184,18 @@ void REFramework::on_frame_d3d12() {
         return;
     }
 
+    const auto draw_data = ImGui::GetDrawData();
+    const bool has_draw_data = (draw_data != nullptr && draw_data->TotalVtxCount > 0);
+
+    // On Darwin / D3DMetal, avoid injecting out-of-band command lists and fence signals
+    // into the submission queue when there is nothing to draw (menu closed).
+    if (utility::DarwinHost::is_darwin() && !has_draw_data) {
+        if (is_init_ok) {
+            m_mods->on_post_frame();
+        }
+        return;
+    }
+
     auto& cmd_ctx = m_d3d12.cmd_ctxs[m_d3d12.cmd_ctx_index++ % m_d3d12.cmd_ctxs.size()];
 
     if (cmd_ctx == nullptr) {
@@ -1271,7 +1283,7 @@ void REFramework::on_post_present_d3d12() {
         return;
     }
 
-    if (m_d3d12.graphics_memory != nullptr) {
+    if (!utility::DarwinHost::is_darwin() && m_d3d12.graphics_memory != nullptr) {
         auto& hook = get_d3d12_hook();
         auto command_queue = hook->get_command_queue();
 
