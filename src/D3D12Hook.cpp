@@ -992,7 +992,8 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         present_fn = d3d12->m_swapchain_hook->get_method<decltype(D3D12Hook::present)*>(8);
     }
 
-    d3d12->m_inside_present = true;
+    const bool is_test = (flags & DXGI_PRESENT_TEST) != 0;
+    d3d12->m_inside_present = !is_test;
     d3d12->m_swap_chain = swap_chain;
 
     if (d3d12->m_device == nullptr) {
@@ -1099,7 +1100,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
             const auto result = present_fn(swap_chain, sync_interval, flags, r9);
             --g_present_depth;
 
-            if (result != S_OK) {
+            if (result != S_OK && result != DXGI_STATUS_OCCLUDED) {
                 spdlog::error("Present failed: {:x}", result);
             }
 
@@ -1110,7 +1111,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         return S_OK;
     }
 
-    if (d3d12->m_on_present) {
+    if (!is_test && d3d12->m_on_present) {
         d3d12->m_on_present(*d3d12);
     }
 
@@ -1121,7 +1122,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
     if (utility::DarwinHost::is_darwin() || !d3d12->m_ignore_next_present) {
         result = present_fn(swap_chain, sync_interval, flags, r9);
 
-        if (result != S_OK) {
+        if (result != S_OK && result != DXGI_STATUS_OCCLUDED) {
             spdlog::error("Present failed: {:x}", result);
         }
         d3d12->m_ignore_next_present = false;
@@ -1131,7 +1132,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     --g_present_depth;
 
-    if (d3d12->m_on_post_present) {
+    if (!is_test && result == S_OK && d3d12->m_on_post_present) {
         d3d12->m_on_post_present(*d3d12);
     }
 

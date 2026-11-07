@@ -39,6 +39,11 @@ bool DarwinHost::is_darwin() {
             release != nullptr ? release : "?",
             is_macos ? "enabled" : "disabled");
 
+        if (is_macos) {
+            SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED);
+            spdlog::info("DarwinHost: Configured SetThreadExecutionState (ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)");
+        }
+
         return is_macos;
     }();
     return result;

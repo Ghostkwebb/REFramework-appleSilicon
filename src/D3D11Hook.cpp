@@ -198,12 +198,14 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
         return last_d3d11_present_result;
     }
 
-    if (d3d11->m_on_present) {
+    const bool is_test = (flags & DXGI_PRESENT_TEST) != 0;
+
+    if (!is_test && d3d11->m_on_present) {
         d3d11->m_on_present(*d3d11);
     }
 
     HRESULT result = S_OK;
-    g_inside_d3d11_present = true;
+    g_inside_d3d11_present = !is_test;
 
     if (!d3d11->m_ignore_next_present) {
         result = present_fn(swap_chain, sync_interval, flags);
@@ -215,7 +217,7 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
 
     g_inside_d3d11_present = false;
 
-    if (d3d11->m_on_post_present) {
+    if (!is_test && result == S_OK && d3d11->m_on_post_present) {
         d3d11->m_on_post_present(*d3d11);
     }
 
