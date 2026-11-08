@@ -838,7 +838,10 @@ bool REFramework::hook_d3d12() {
         m_d3d12_hook->on_present([this](D3D12Hook& hook) { on_frame_d3d12(); });
         m_d3d12_hook->on_post_present([this](D3D12Hook& hook) { on_post_present_d3d12(); });
         m_d3d12_hook->on_resize_buffers([this](D3D12Hook& hook) { on_reset(); });
-        m_d3d12_hook->on_resize_target([this](D3D12Hook& hook) { on_reset(); });
+        // Do NOT hook on_resize_target to on_reset():
+        // IDXGISwapChain::ResizeTarget only resizes the target window/display mode and does NOT
+        // reallocate swapchain buffers. Calling on_reset() here destroys descriptor heaps and ImGui
+        // on every window focus change / Alt-Tab, causing reset loops and hangs.
     //}
     //m_d3d12_hook->on_create_swap_chain([this](D3D12Hook& hook) { m_d3d12.command_queue = m_d3d12_hook->get_command_queue(); });
 

@@ -1111,19 +1111,6 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         return S_OK;
     }
 
-    if (utility::DarwinHost::is_darwin() && !is_test && swapchain_wnd != nullptr) {
-        const auto fg_wnd = GetForegroundWindow();
-        const auto root_wnd = GetAncestor(swapchain_wnd, GA_ROOT);
-        const bool is_active_window = (fg_wnd == swapchain_wnd || (root_wnd != nullptr && fg_wnd == root_wnd));
-        const bool is_iconic = IsIconic(swapchain_wnd) != FALSE;
-
-        if (!is_active_window || is_iconic) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(16));
-            d3d12->m_inside_present = false;
-            return present_fn(swap_chain, 0, flags | DXGI_PRESENT_TEST, r9);
-        }
-    }
-
     if (!is_test && d3d12->m_on_present) {
         d3d12->m_on_present(*d3d12);
     }
@@ -1306,8 +1293,10 @@ HRESULT WINAPI D3D12Hook::resize_target(IDXGISwapChain3* swap_chain, const DXGI_
 
     auto resize_target_fn = d3d12->m_swapchain_hook->get_method<decltype(D3D12Hook::resize_target)*>(14);
 
-    d3d12->m_render_width = new_target_parameters->Width;
-    d3d12->m_render_height = new_target_parameters->Height;
+    if (new_target_parameters != nullptr) {
+        d3d12->m_render_width = new_target_parameters->Width;
+        d3d12->m_render_height = new_target_parameters->Height;
+    }
 
     // Restore the original code to the resize_buffers function.
     if (g_resize_target_depth > 0) {
