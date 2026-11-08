@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
@@ -199,6 +201,27 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
     }
 
     const bool is_test = (flags & DXGI_PRESENT_TEST) != 0;
+
+    if (utility::DarwinHost::is_darwin() && !is_test) {
+        HWND swapchain_wnd{nullptr};
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if (SUCCEEDED(swap_chain->GetDesc(&desc))) {
+            swapchain_wnd = desc.OutputWindow;
+        }
+
+        if (swapchain_wnd != nullptr) {
+            const auto fg_wnd = GetForegroundWindow();
+            const auto root_wnd = GetAncestor(swapchain_wnd, GA_ROOT);
+            const bool is_active_window = (fg_wnd == swapchain_wnd || (root_wnd != nullptr && fg_wnd == root_wnd));
+            const bool is_iconic = IsIconic(swapchain_wnd) != FALSE;
+
+            if (!is_active_window || is_iconic) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
+                d3d11->m_inside_present = false;
+                return present_fn(swap_chain, 0, flags | DXGI_PRESENT_TEST);
+            }
+        }
+    }
 
     if (!is_test && d3d11->m_on_present) {
         d3d11->m_on_present(*d3d11);

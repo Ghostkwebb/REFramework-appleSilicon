@@ -1359,10 +1359,14 @@ void REFramework::remove_set_cursor_pos_patch() {
 
 // https://github.com/PGGB/DeviceStutterFix
 bool is_device_controller(PDEV_BROADCAST_HDR hdr, WPARAM w_param) {
-    if (hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+    if (hdr != nullptr && hdr->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
         const auto d_interface = (PDEV_BROADCAST_DEVICEINTERFACE)hdr;
 
-        if (d_interface->dbcc_classguid == XUSB_INTERFACE_CLASS_GUID) {
+        static const GUID guid_devinterface_hid = {
+            0x4D1E55B2, 0xF16F, 0x11CF, { 0x88, 0xCB, 0x00, 0x11, 0x11, 0x00, 0x00, 0x30 }
+        };
+
+        if (d_interface->dbcc_classguid == XUSB_INTERFACE_CLASS_GUID || d_interface->dbcc_classguid == guid_devinterface_hid) {
             spdlog::info("Event {:x}: Relevant device detected", w_param);
             return true;
         }
@@ -1455,6 +1459,9 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
     // Maybe they forgot to add a break statement for WM_DEVICECHANGE and it falls through to some window resizing case?
     // https://github.com/PGGB/DeviceStutterFix
     case WM_DEVICECHANGE:
+        if (utility::DarwinHost::is_darwin()) {
+            break;
+        }
         switch (w_param) {
             case DBT_DEVICEARRIVAL:
             case DBT_DEVICEREMOVECOMPLETE:
