@@ -1392,47 +1392,49 @@ void IntegrityCheckBypass::immediate_patch_dd2() {
     }
     }
 
-    if (const auto create_blas_fn = utility::find_function_from_string_ref(game, "createBLAS"); create_blas_fn.has_value()) {
-        const auto create_blas_fn_unwind = utility::find_function_start_unwind(*create_blas_fn);
+    if (!gi.is_pragmata()) {
+        if (const auto create_blas_fn = utility::find_function_from_string_ref(game, "createBLAS"); create_blas_fn.has_value()) {
+            const auto create_blas_fn_unwind = utility::find_function_start_unwind(*create_blas_fn);
 
-        if (create_blas_fn_unwind) {
-            spdlog::info("[IntegrityCheckBypass]: Found createBLAS!");
+            if (create_blas_fn_unwind) {
+                spdlog::info("[IntegrityCheckBypass]: Found createBLAS!");
 
-            // Look for first lea rcx, [mem]
-            const auto lea_rcx = utility::find_pattern_in_path((uint8_t*)*create_blas_fn_unwind, 1000, false, "48 8D 0D ? ? ? ?");
+                // Look for first lea rcx, [mem]
+                const auto lea_rcx = utility::find_pattern_in_path((uint8_t*)*create_blas_fn_unwind, 1000, false, "48 8D 0D ? ? ? ?");
 
-            if (lea_rcx) {
-                s_corruption_when_zero = (uint32_t*)utility::calculate_absolute(lea_rcx->addr + 3);
-                spdlog::info("[IntegrityCheckBypass]: Found corruption_when_zero!");
+                if (lea_rcx) {
+                    s_corruption_when_zero = (uint32_t*)utility::calculate_absolute(lea_rcx->addr + 3);
+                    spdlog::info("[IntegrityCheckBypass]: Found corruption_when_zero!");
+                } else {
+                    spdlog::error("[IntegrityCheckBypass]: Could not find lea_rcx!");
+                }
+
+                s_renderer_create_blas_hook = std::make_unique<FunctionHook>(*create_blas_fn, &renderer_create_blas_hook);
+
+                if (!s_renderer_create_blas_hook->create()) {
+                    spdlog::error("[IntegrityCheckBypass]: Failed to hook createBLAS!");
+                } else {
+                    spdlog::info("[IntegrityCheckBypass]: Hooked createBLAS!");
+                }
             } else {
-                spdlog::error("[IntegrityCheckBypass]: Could not find lea_rcx!");
-            }
-
-            s_renderer_create_blas_hook = std::make_unique<FunctionHook>(*create_blas_fn, &renderer_create_blas_hook);
-
-            if (!s_renderer_create_blas_hook->create()) {
-                spdlog::error("[IntegrityCheckBypass]: Failed to hook createBLAS!");
-            } else {
-                spdlog::info("[IntegrityCheckBypass]: Hooked createBLAS!");
+                spdlog::error("[IntegrityCheckBypass]: Could not find unwound createBLAS!");
             }
         } else {
-            spdlog::error("[IntegrityCheckBypass]: Could not find unwound createBLAS!");
+            spdlog::error("[IntegrityCheckBypass]: Could not find createBLAS!");
         }
-    } else {
-        spdlog::error("[IntegrityCheckBypass]: Could not find createBLAS!");
+
+        static std::vector<Patch::Ptr> sus_constant_patches{};
+
+        for (auto ref = utility::scan(game, "81 ? E1 53 BD 4C");
+             ref.has_value();
+             ref = utility::scan(*ref + 1, (game_end - (*ref + 1)) - 0x1000, "81 ? E1 53 BD 4C"))
+        {
+            // Patch to 0x1337BEEF
+            sus_constant_patches.emplace_back(Patch::create(*ref + 2, { 0xEF, 0xBE, 0x37, 0x13 }, true));
+        }
+
+        spdlog::info("[IntegrityCheckBypass]: Patched {} sus_constants! (DD2+ variant)", sus_constant_patches.size());
     }
-
-    static std::vector<Patch::Ptr> sus_constant_patches{};
-
-    for (auto ref = utility::scan(game, "81 ? E1 53 BD 4C");
-         ref.has_value();
-         ref = utility::scan(*ref + 1, (game_end - (*ref + 1)) - 0x1000, "81 ? E1 53 BD 4C"))
-    {
-        // Patch to 0x1337BEEF
-        sus_constant_patches.emplace_back(Patch::create(*ref + 2, { 0xEF, 0xBE, 0x37, 0x13 }, true));
-    }
-
-    spdlog::info("[IntegrityCheckBypass]: Patched {} sus_constants! (DD2+ variant)", sus_constant_patches.size());
 
     restore_unencrypted_paks();
     }
@@ -2189,6 +2191,7 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
 
     if (renderer != nullptr && renderer_t != nullptr && get_RenderFrame != nullptr) {
         static uint32_t* heartbeat_offset_start{nullptr};
+        static uintptr_t confirmed_renderer_addr{0};
         static std::vector<uintptr_t> candidates{};
         static uint32_t last_scan_frame = 0;
         static int confirmation_count = 0;
@@ -2200,9 +2203,24 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
         const auto renderer_addr = (uintptr_t)renderer;
 
         if (heartbeat_offset_start != nullptr) {
-            // Confirmed, sync heartbeats to frame counter every frame
-            for (size_t i = 0; i < HEARTBEAT_COUNT; i++) {
-                heartbeat_offset_start[i] = frame_count;
+            bool valid = false;
+            try {
+                if (renderer_addr == confirmed_renderer_addr && heartbeat_offset_start[-1] == 1 && heartbeat_offset_start[HEARTBEAT_COUNT] == 0) {
+                    valid = true;
+                }
+            } catch (...) {
+                valid = false;
+            }
+
+            if (valid) {
+                // Confirmed, sync heartbeats to frame counter every frame
+                for (size_t i = 0; i < HEARTBEAT_COUNT; i++) {
+                    heartbeat_offset_start[i] = frame_count;
+                }
+            } else {
+                heartbeat_offset_start = nullptr;
+                candidates.clear();
+                confirmation_count = 0;
             }
         } else if (frame_count > 100 && frame_count != last_scan_frame) {
             // Debug for RE9 (known to be at 0x3328)
@@ -2272,6 +2290,7 @@ void IntegrityCheckBypass::re9_heartbeat_bypass() {
 
                 if (candidates.size() == 1 && confirmation_count >= CONFIRMATIONS_NEEDED) {
                     heartbeat_offset_start = (uint32_t*)candidates[0];
+                    confirmed_renderer_addr = renderer_addr;
                     spdlog::info("[IntegrityCheckBypass] Found heartbeat cluster at renderer+0x{:X} after {} confirmations at frame count {}, syncing it to frame count every frame now",
                         (uintptr_t)heartbeat_offset_start - renderer_addr, confirmation_count, frame_count);
                 } else if (candidates.empty()) {

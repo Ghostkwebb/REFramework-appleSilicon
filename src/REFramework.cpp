@@ -943,7 +943,7 @@ void REFramework::run_imgui_frame(bool from_present) {
     // On macOS / Wine / CrossOver, standard window messages (WM_MOUSEMOVE, WM_LBUTTONDOWN)
     // are frequently routed directly to DirectInput/RawInput or Cocoa and bypass window_proc.
     // Query physical cursor position and button states so ImGui always receives mouse interactions.
-    if (utility::DarwinHost::is_darwin() || m_draw_ui) {
+    if (m_draw_ui) {
         POINT pt{};
         if (::GetCursorPos(&pt)) {
             HWND target_wnd = m_wnd;
@@ -955,15 +955,13 @@ void REFramework::run_imgui_frame(bool from_present) {
                 io.AddMousePosEvent(static_cast<float>(pt.x), static_cast<float>(pt.y));
             }
         }
-        if (m_draw_ui) {
-            auto& io = ImGui::GetIO();
-            const bool lbutton_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-            const bool rbutton_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-            const bool mbutton_down = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-            io.AddMouseButtonEvent(0, lbutton_down);
-            io.AddMouseButtonEvent(1, rbutton_down);
-            io.AddMouseButtonEvent(2, mbutton_down);
-        }
+        auto& io = ImGui::GetIO();
+        const bool lbutton_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+        const bool rbutton_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+        const bool mbutton_down = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+        io.AddMouseButtonEvent(0, lbutton_down);
+        io.AddMouseButtonEvent(1, rbutton_down);
+        io.AddMouseButtonEvent(2, mbutton_down);
     }
 
     // from_present is so we don't accidentally
@@ -1112,24 +1110,6 @@ void REFramework::on_post_present_d3d11() {
 // D3D12 Draw funciton
 void REFramework::on_frame_d3d12() {
     std::scoped_lock _{ m_imgui_mtx };
-
-    if (utility::DarwinHost::is_darwin()) {
-        auto swap_chain = m_d3d12_hook->get_swap_chain();
-        HWND swapchain_wnd{nullptr};
-        if (swap_chain != nullptr) {
-            swap_chain->GetHwnd(&swapchain_wnd);
-        }
-        if (swapchain_wnd != nullptr) {
-            const auto fg_wnd = GetForegroundWindow();
-            const auto root_wnd = GetAncestor(swapchain_wnd, GA_ROOT);
-            const bool is_active_window = (fg_wnd == swapchain_wnd || (root_wnd != nullptr && fg_wnd == root_wnd));
-            const bool is_iconic = IsIconic(swapchain_wnd) != FALSE;
-
-            if (!is_active_window || is_iconic) {
-                return;
-            }
-        }
-    }
 
     m_renderer_type = RendererType::D3D12;
 

@@ -1154,26 +1154,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         return S_OK;
     }
 
-#ifndef DXGI_PRESENT_ALLOW_TEARING
-#define DXGI_PRESENT_ALLOW_TEARING 0x00000200UL
-#endif
-
-    bool is_background = false;
-    if (utility::DarwinHost::is_darwin() && !is_test && swapchain_wnd != nullptr) {
-        const auto fg_wnd = GetForegroundWindow();
-        const auto root_wnd = GetAncestor(swapchain_wnd, GA_ROOT);
-        const bool is_active_window = (fg_wnd == swapchain_wnd || (root_wnd != nullptr && fg_wnd == root_wnd));
-        const bool is_iconic = IsIconic(swapchain_wnd) != FALSE;
-
-        if (!is_active_window || is_iconic) {
-            is_background = true;
-            std::this_thread::sleep_for(std::chrono::milliseconds(33));
-            sync_interval = std::max<uint64_t>(sync_interval, 1);
-            flags &= ~DXGI_PRESENT_ALLOW_TEARING;
-        }
-    }
-
-    if (!is_test && !is_background && d3d12->m_on_present) {
+    if (!is_test && d3d12->m_on_present) {
         d3d12->m_on_present(*d3d12);
     }
 
@@ -1194,7 +1175,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     --g_present_depth;
 
-    if (!is_test && !is_background && result == S_OK && d3d12->m_on_post_present) {
+    if (!is_test && result == S_OK && d3d12->m_on_post_present) {
         d3d12->m_on_post_present(*d3d12);
     }
 
@@ -1292,8 +1273,6 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
     if (d3d12->m_on_resize_buffers) {
         d3d12->m_on_resize_buffers(*d3d12);
     }
-
-    d3d12->flush_command_queue(2000);
 
     ++g_resize_buffers_depth;
 
