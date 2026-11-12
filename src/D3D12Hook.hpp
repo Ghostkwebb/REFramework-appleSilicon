@@ -66,6 +66,8 @@ public:
         return m_command_queue;
     }
 
+    void flush_command_queue(uint32_t timeout_ms = 2000);
+
     UINT get_display_width() const {
         return m_display_width;
     }
@@ -110,6 +112,10 @@ protected:
     ID3D12CommandQueue* m_command_queue{ nullptr };
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_fallback_command_queue{};
     static inline Microsoft::WRL::ComPtr<ID3D12CommandQueue> s_captured_command_queue{};
+    Microsoft::WRL::ComPtr<ID3D12Fence> m_flush_fence{};
+    HANDLE m_flush_event{ nullptr };
+    UINT64 m_flush_fence_val{ 0 };
+    ID3D12Device* m_flush_fence_device{ nullptr };
     UINT m_display_width{ NULL };
     UINT m_display_height{ NULL };
     UINT m_render_width{ NULL };

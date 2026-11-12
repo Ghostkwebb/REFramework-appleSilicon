@@ -25,6 +25,49 @@ thread_local bool g_inside_d3d12_hook = false;
 
 D3D12Hook::~D3D12Hook() {
     unhook();
+    if (m_flush_event != nullptr) {
+        CloseHandle(m_flush_event);
+        m_flush_event = nullptr;
+    }
+    m_flush_fence.Reset();
+    m_flush_fence_device = nullptr;
+}
+
+void D3D12Hook::flush_command_queue(uint32_t timeout_ms) {
+    if (m_command_queue == nullptr || m_device == nullptr) {
+        return;
+    }
+
+    if (m_flush_fence != nullptr && m_flush_fence_device != (ID3D12Device*)m_device) {
+        if (m_flush_event != nullptr) {
+            CloseHandle(m_flush_event);
+            m_flush_event = nullptr;
+        }
+        m_flush_fence.Reset();
+        m_flush_fence_device = nullptr;
+        m_flush_fence_val = 0;
+    }
+
+    if (m_flush_fence == nullptr) {
+        if (FAILED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_flush_fence)))) {
+            return;
+        }
+        m_flush_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        m_flush_fence_device = (ID3D12Device*)m_device;
+        m_flush_fence_val = 0;
+    }
+
+    if (m_flush_event == nullptr) {
+        return;
+    }
+
+    const auto fence_val = ++m_flush_fence_val;
+    if (SUCCEEDED(m_command_queue->Signal(m_flush_fence.Get(), fence_val))) {
+        if (m_flush_fence->GetCompletedValue() < fence_val) {
+            m_flush_fence->SetEventOnCompletion(fence_val, m_flush_event);
+            WaitForSingleObject(m_flush_event, timeout_ms);
+        }
+    }
 }
 
 static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
@@ -1111,7 +1154,26 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         return S_OK;
     }
 
-    if (!is_test && d3d12->m_on_present) {
+#ifndef DXGI_PRESENT_ALLOW_TEARING
+#define DXGI_PRESENT_ALLOW_TEARING 0x00000200UL
+#endif
+
+    bool is_background = false;
+    if (utility::DarwinHost::is_darwin() && !is_test && swapchain_wnd != nullptr) {
+        const auto fg_wnd = GetForegroundWindow();
+        const auto root_wnd = GetAncestor(swapchain_wnd, GA_ROOT);
+        const bool is_active_window = (fg_wnd == swapchain_wnd || (root_wnd != nullptr && fg_wnd == root_wnd));
+        const bool is_iconic = IsIconic(swapchain_wnd) != FALSE;
+
+        if (!is_active_window || is_iconic) {
+            is_background = true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(33));
+            sync_interval = std::max<uint64_t>(sync_interval, 1);
+            flags &= ~DXGI_PRESENT_ALLOW_TEARING;
+        }
+    }
+
+    if (!is_test && !is_background && d3d12->m_on_present) {
         d3d12->m_on_present(*d3d12);
     }
 
@@ -1132,7 +1194,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     --g_present_depth;
 
-    if (!is_test && result == S_OK && d3d12->m_on_post_present) {
+    if (!is_test && !is_background && result == S_OK && d3d12->m_on_post_present) {
         d3d12->m_on_post_present(*d3d12);
     }
 
@@ -1225,9 +1287,13 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
         }
     }
 
+    d3d12->flush_command_queue(2000);
+
     if (d3d12->m_on_resize_buffers) {
         d3d12->m_on_resize_buffers(*d3d12);
     }
+
+    d3d12->flush_command_queue(2000);
 
     ++g_resize_buffers_depth;
 

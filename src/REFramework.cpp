@@ -1113,6 +1113,24 @@ void REFramework::on_post_present_d3d11() {
 void REFramework::on_frame_d3d12() {
     std::scoped_lock _{ m_imgui_mtx };
 
+    if (utility::DarwinHost::is_darwin()) {
+        auto swap_chain = m_d3d12_hook->get_swap_chain();
+        HWND swapchain_wnd{nullptr};
+        if (swap_chain != nullptr) {
+            swap_chain->GetHwnd(&swapchain_wnd);
+        }
+        if (swapchain_wnd != nullptr) {
+            const auto fg_wnd = GetForegroundWindow();
+            const auto root_wnd = GetAncestor(swapchain_wnd, GA_ROOT);
+            const bool is_active_window = (fg_wnd == swapchain_wnd || (root_wnd != nullptr && fg_wnd == root_wnd));
+            const bool is_iconic = IsIconic(swapchain_wnd) != FALSE;
+
+            if (!is_active_window || is_iconic) {
+                return;
+            }
+        }
+    }
+
     m_renderer_type = RendererType::D3D12;
 
     auto command_queue = m_d3d12_hook->get_command_queue();
