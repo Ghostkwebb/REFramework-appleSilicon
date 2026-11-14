@@ -67,6 +67,7 @@ public:
     }
 
     void flush_command_queue(uint32_t timeout_ms = 2000);
+    void pace_command_queue(uint32_t max_frames_in_flight, uint32_t timeout_ms = 2000);
 
     UINT get_display_width() const {
         return m_display_width;
@@ -116,6 +117,7 @@ protected:
     HANDLE m_flush_event{ nullptr };
     UINT64 m_flush_fence_val{ 0 };
     ID3D12Device* m_flush_fence_device{ nullptr };
+    uint32_t m_swapchain_buffer_count{ 3 };
     UINT m_display_width{ NULL };
     UINT m_display_height{ NULL };
     UINT m_render_width{ NULL };

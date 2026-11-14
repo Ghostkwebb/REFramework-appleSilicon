@@ -33,7 +33,7 @@ D3D12Hook::~D3D12Hook() {
     m_flush_fence_device = nullptr;
 }
 
-void D3D12Hook::flush_command_queue(uint32_t timeout_ms) {
+void D3D12Hook::pace_command_queue(uint32_t max_frames_in_flight, uint32_t timeout_ms) {
     if (m_command_queue == nullptr || m_device == nullptr) {
         return;
     }
@@ -63,11 +63,18 @@ void D3D12Hook::flush_command_queue(uint32_t timeout_ms) {
 
     const auto fence_val = ++m_flush_fence_val;
     if (SUCCEEDED(m_command_queue->Signal(m_flush_fence.Get(), fence_val))) {
-        if (m_flush_fence->GetCompletedValue() < fence_val) {
-            m_flush_fence->SetEventOnCompletion(fence_val, m_flush_event);
-            WaitForSingleObject(m_flush_event, timeout_ms);
+        if (fence_val > max_frames_in_flight) {
+            const auto target_val = fence_val - max_frames_in_flight;
+            if (m_flush_fence->GetCompletedValue() < target_val) {
+                m_flush_fence->SetEventOnCompletion(target_val, m_flush_event);
+                WaitForSingleObject(m_flush_event, timeout_ms);
+            }
         }
     }
+}
+
+void D3D12Hook::flush_command_queue(uint32_t timeout_ms) {
+    pace_command_queue(0, timeout_ms);
 }
 
 static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
@@ -281,6 +288,10 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
     }
 
     const auto result = create_swap_chain_fn(factory, device, hwnd, desc, p_fullscreen_desc, p_restrict_to_output, swap_chain);
+
+    if (result == S_OK && g_d3d12_hook != nullptr && desc != nullptr && desc->BufferCount > 0) {
+        g_d3d12_hook->m_swapchain_buffer_count = desc->BufferCount;
+    }
 
     // Dynamic recovery on Darwin/Wine if offset scan wasn't resolved during dummy device creation
     if (result == S_OK && s_command_queue_offset == 0 && utility::DarwinHost::is_darwin() && swap_chain != nullptr && *swap_chain != nullptr) {
@@ -1037,6 +1048,16 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     const bool is_test = (flags & DXGI_PRESENT_TEST) != 0;
     d3d12->m_inside_present = !is_test;
+
+    if (d3d12->m_swapchain_buffer_count == 0 || d3d12->m_swap_chain != swap_chain) {
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if (SUCCEEDED(swap_chain->GetDesc(&desc)) && desc.BufferCount > 0) {
+            d3d12->m_swapchain_buffer_count = desc.BufferCount;
+        } else if (d3d12->m_swapchain_buffer_count == 0) {
+            d3d12->m_swapchain_buffer_count = 3;
+        }
+    }
+
     d3d12->m_swap_chain = swap_chain;
 
     if (d3d12->m_device == nullptr) {
@@ -1189,6 +1210,10 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     --g_present_depth;
 
+    if (utility::DarwinHost::is_darwin() && !is_test && SUCCEEDED(result)) {
+        d3d12->pace_command_queue(d3d12->m_swapchain_buffer_count);
+    }
+
     if (!is_test && result == S_OK && d3d12->m_on_post_present) {
         d3d12->m_on_post_present(*d3d12);
     }
@@ -1252,6 +1277,15 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
 
     d3d12->m_display_width = width;
     d3d12->m_display_height = height;
+
+    if (buffer_count > 0) {
+        d3d12->m_swapchain_buffer_count = buffer_count;
+    } else {
+        DXGI_SWAP_CHAIN_DESC desc{};
+        if (SUCCEEDED(swap_chain->GetDesc(&desc)) && desc.BufferCount > 0) {
+            d3d12->m_swapchain_buffer_count = desc.BufferCount;
+        }
+    }
 
     if (g_resize_buffers_depth > 0) {
         auto original_bytes = utility::get_original_bytes(Address{resize_buffers_fn});
