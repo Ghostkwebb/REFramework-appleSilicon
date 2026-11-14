@@ -1211,7 +1211,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
     --g_present_depth;
 
     if (utility::DarwinHost::is_darwin() && !is_test && SUCCEEDED(result)) {
-        d3d12->pace_command_queue(d3d12->m_swapchain_buffer_count);
+        d3d12->pace_command_queue(1);
     }
 
     if (!is_test && result == S_OK && d3d12->m_on_post_present) {
