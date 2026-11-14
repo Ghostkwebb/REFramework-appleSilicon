@@ -1088,7 +1088,19 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
     // Validate that m_command_queue is a genuine, callable Win32 COM interface.
     // If not (e.g. on macOS / D3DMetal where swapchain stores raw Metal pointers),
     // create a dedicated command queue directly on the real ID3D12Device.
-    if (!utility::DarwinHost::is_valid_command_queue(d3d12->m_command_queue)) {
+    static ID3D12CommandQueue* s_last_validated_queue{nullptr};
+    static bool s_last_validation_result{false};
+
+    bool is_cq_valid = false;
+    if (d3d12->m_command_queue != nullptr && d3d12->m_command_queue == s_last_validated_queue) {
+        is_cq_valid = s_last_validation_result;
+    } else {
+        is_cq_valid = utility::DarwinHost::is_valid_command_queue(d3d12->m_command_queue);
+        s_last_validated_queue = d3d12->m_command_queue;
+        s_last_validation_result = is_cq_valid;
+    }
+
+    if (!is_cq_valid) {
         if (d3d12->m_command_queue != nullptr) {
             spdlog::warn("D3D12Hook: Resolved pointer {:x} is not a valid COM command queue, using fallback", (uintptr_t)d3d12->m_command_queue);
             d3d12->m_command_queue = nullptr;
@@ -1111,6 +1123,8 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
         if (d3d12->m_fallback_command_queue != nullptr) {
             d3d12->m_command_queue = d3d12->m_fallback_command_queue.Get();
+            s_last_validated_queue = d3d12->m_command_queue;
+            s_last_validation_result = true;
         }
     }
 

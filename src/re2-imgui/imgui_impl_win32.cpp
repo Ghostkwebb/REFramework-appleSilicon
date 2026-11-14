@@ -396,7 +396,7 @@ static void ImGui_ImplWin32_UpdateGamepads(ImGuiIO& io)
 #endif
 }
 
-void    ImGui_ImplWin32_NewFrame()
+void    ImGui_ImplWin32_NewFrame(bool update_input)
 {
     ImGui_ImplWin32_Data* bd = ImGui_ImplWin32_GetBackendData();
     IM_ASSERT(bd != nullptr && "Context or backend not initialized? Did you call ImGui_ImplWin32_Init()?");
@@ -413,22 +413,25 @@ void    ImGui_ImplWin32_NewFrame()
     io.DeltaTime = (float)(current_time - bd->Time) / bd->TicksPerSecond;
     bd->Time = current_time;
 
-    // Update OS mouse position
-    ImGui_ImplWin32_UpdateMouseData(io);
-
-    // Process workarounds for known Windows key handling issues
-    ImGui_ImplWin32_ProcessKeyEventsWorkarounds(io);
-
-    // Update OS mouse cursor with the cursor requested by imgui
-    ImGuiMouseCursor mouse_cursor = io.MouseDrawCursor ? ImGuiMouseCursor_None : ImGui::GetMouseCursor();
-    if (bd->LastMouseCursor != mouse_cursor)
+    if (update_input)
     {
-        bd->LastMouseCursor = mouse_cursor;
-        ImGui_ImplWin32_UpdateMouseCursor(io, mouse_cursor);
-    }
+        // Update OS mouse position
+        ImGui_ImplWin32_UpdateMouseData(io);
 
-    // Update game controllers (if enabled and available)
-    ImGui_ImplWin32_UpdateGamepads(io);
+        // Process workarounds for known Windows key handling issues
+        ImGui_ImplWin32_ProcessKeyEventsWorkarounds(io);
+
+        // Update OS mouse cursor with the cursor requested by imgui
+        ImGuiMouseCursor mouse_cursor = io.MouseDrawCursor ? ImGuiMouseCursor_None : ImGui::GetMouseCursor();
+        if (bd->LastMouseCursor != mouse_cursor)
+        {
+            bd->LastMouseCursor = mouse_cursor;
+            ImGui_ImplWin32_UpdateMouseCursor(io, mouse_cursor);
+        }
+
+        // Update game controllers (if enabled and available)
+        ImGui_ImplWin32_UpdateGamepads(io);
+    }
 }
 
 // Map VK_xxx to ImGuiKey_xxx.

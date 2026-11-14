@@ -938,7 +938,8 @@ void REFramework::run_imgui_frame(bool from_present) {
     consume_input();
     init_fonts();
     
-    ImGui_ImplWin32_NewFrame();
+    const bool should_update_input = !utility::DarwinHost::is_darwin() || m_draw_ui;
+    ImGui_ImplWin32_NewFrame(should_update_input);
 
     // On macOS / Wine / CrossOver, standard window messages (WM_MOUSEMOVE, WM_LBUTTONDOWN)
     // are frequently routed directly to DirectInput/RawInput or Cocoa and bypass window_proc.
