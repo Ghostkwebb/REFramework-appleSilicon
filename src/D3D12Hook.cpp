@@ -460,6 +460,8 @@ bool D3D12Hook::hook() {
             spdlog::error("Failed to create D3D12 dummy device under D3DMetal");
             return false;
         }
+
+        utility::DarwinHost::enforce_metal3_mode();
     } else {
         // Get the original on-disk bytes of the D3D12CreateDevice export
         const auto original_bytes = utility::get_original_bytes(d3d12_create_device);

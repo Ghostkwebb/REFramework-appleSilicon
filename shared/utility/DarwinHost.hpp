@@ -25,6 +25,7 @@ public:
     static intptr_t calculate_command_queue_delta(void* swapchain, uint32_t offset, IUnknown* command_queue);
     static bool is_valid_command_queue(ID3D12CommandQueue* queue);
     static bool is_host_darwin_pointer(uintptr_t addr);
+    static void enforce_metal3_mode();
 
     // Keyboard & input helpers
     static uint32_t get_default_menu_key();

@@ -233,4 +233,289 @@ bool DarwinHost::is_mac_command_key(uint32_t vk_code) {
     return is_darwin() && (vk_code == VK_LWIN || vk_code == VK_RWIN);
 }
 
+// SysV AMD64 calling convention thunks for macOS native functions
+static int call_sysv_setenv(void* fn, const char* name, const char* value, int overwrite) {
+    if (fn == nullptr) {
+        return -1;
+    }
+
+    // Windows x64 ABI (caller): rcx = fn, rdx = name, r8 = value, r9 = overwrite
+    // SysV AMD64 ABI (callee):  rdi = name, rsi = value, rdx = overwrite, rax = fn
+    // Stack must be 16-byte aligned before call
+    static const uint8_t thunk_code[] = {
+        0x55,                                     // push rbp
+        0x48, 0x89, 0xe5,                         // mov rbp, rsp
+        0x53,                                     // push rbx
+        0x57,                                     // push rdi
+        0x56,                                     // push rsi
+        0x48, 0x89, 0xc8,                         // mov rax, rcx  (fn)
+        0x48, 0x89, 0xd7,                         // mov rdi, rdx  (name)
+        0x48, 0x89, 0xc6,                         // mov rsi, r8   (value)
+        0x48, 0x89, 0xca,                         // mov rdx, r9   (overwrite)
+        0x48, 0x83, 0xe4, 0xf0,                   // and rsp, -16  (16-byte stack align)
+        0xff, 0xd0,                               // call rax
+        0x48, 0x8d, 0x65, 0xe8,                   // lea rsp, [rbp - 24]
+        0x5e,                                     // pop rsi
+        0x5f,                                     // pop rdi
+        0x5b,                                     // pop rbx
+        0x5d,                                     // pop rbp
+        0xc3                                      // ret
+    };
+
+    static void* executable_thunk = nullptr;
+    if (executable_thunk == nullptr) {
+        executable_thunk = VirtualAlloc(nullptr, sizeof(thunk_code), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (executable_thunk != nullptr) {
+            memcpy(executable_thunk, thunk_code, sizeof(thunk_code));
+        }
+    }
+
+    if (executable_thunk == nullptr) {
+        return -1;
+    }
+
+    using thunk_fn_t = int (*)(void*, const char*, const char*, int);
+    return ((thunk_fn_t)executable_thunk)(fn, name, value, overwrite);
+}
+
+static void* call_sysv_dlsym(void* fn, void* handle, const char* name) {
+    if (fn == nullptr) {
+        return nullptr;
+    }
+
+    // Windows x64 ABI (caller): rcx = fn, rdx = handle, r8 = name
+    // SysV AMD64 ABI (callee):  rdi = handle, rsi = name, rax = fn
+    static const uint8_t thunk_code[] = {
+        0x55,                                     // push rbp
+        0x48, 0x89, 0xe5,                         // mov rbp, rsp
+        0x53,                                     // push rbx
+        0x57,                                     // push rdi
+        0x56,                                     // push rsi
+        0x48, 0x89, 0xc8,                         // mov rax, rcx  (fn)
+        0x48, 0x89, 0xd7,                         // mov rdi, rdx  (handle)
+        0x48, 0x89, 0xc6,                         // mov rsi, r8   (name)
+        0x48, 0x83, 0xe4, 0xf0,                   // and rsp, -16  (16-byte stack align)
+        0xff, 0xd0,                               // call rax
+        0x48, 0x8d, 0x65, 0xe8,                   // lea rsp, [rbp - 24]
+        0x5e,                                     // pop rsi
+        0x5f,                                     // pop rdi
+        0x5b,                                     // pop rbx
+        0x5d,                                     // pop rbp
+        0xc3                                      // ret
+    };
+
+    static void* executable_thunk = nullptr;
+    if (executable_thunk == nullptr) {
+        executable_thunk = VirtualAlloc(nullptr, sizeof(thunk_code), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        if (executable_thunk != nullptr) {
+            memcpy(executable_thunk, thunk_code, sizeof(thunk_code));
+        }
+    }
+
+    if (executable_thunk == nullptr) {
+        return nullptr;
+    }
+
+    using thunk_fn_t = void* (*)(void*, void*, const char*);
+    return ((thunk_fn_t)executable_thunk)(fn, handle, name);
+}
+
+// Memory scanner & enforcer wrapped in SEH (__try/__except cannot contain C++ objects requiring destruction)
+static bool __declspec(noinline) enforce_metal3_mode_seh(
+    uintptr_t& out_d3dmetal_base,
+    uintptr_t& out_setenv_fn,
+    int& out_setenv_res,
+    uintptr_t& out_mtl4_addr,
+    uint8_t& out_prior_val)
+{
+    __try {
+        static const char target_str[] = "D3DM_MTL4";
+        const size_t target_len = sizeof(target_str); // 10 bytes including null terminator
+
+        uintptr_t str_addr = 0;
+        MEMORY_BASIC_INFORMATION mbi{};
+        uintptr_t scan_ptr = 0x200000000ULL;
+        const uintptr_t scan_end = 0x400000000ULL;
+
+        // 1. Locate string "D3DM_MTL4" in committed readable memory
+        while (scan_ptr < scan_end && VirtualQuery((LPCVOID)scan_ptr, &mbi, sizeof(mbi)) != 0) {
+            if (mbi.State == MEM_COMMIT &&
+                (mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                !(mbi.Protect & PAGE_GUARD))
+            {
+                const uint8_t* start = (const uint8_t*)mbi.BaseAddress;
+                const size_t size = mbi.RegionSize;
+                if (size >= target_len) {
+                    const uint8_t* p_end = start + size - target_len;
+                    for (const uint8_t* p = start; p <= p_end; ++p) {
+                        if (*p == 'D' && memcmp(p, target_str, target_len) == 0) {
+                            str_addr = (uintptr_t)p;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (str_addr != 0) {
+                break;
+            }
+            scan_ptr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        }
+
+        if (str_addr == 0) {
+            return false;
+        }
+
+        // 2. Find Mach-O header of D3DMetal (0xFEEDFACF) by walking backward page by page
+        uintptr_t d3dmetal_base = 0;
+        uintptr_t page_candidate = str_addr & ~0xFFFULL;
+        for (int i = 0; i < 4096 && page_candidate >= 0x200000000ULL; ++i) {
+            if (*(const uint32_t*)page_candidate == 0xFEEDFACF) {
+                d3dmetal_base = page_candidate;
+                break;
+            }
+            page_candidate -= 0x1000;
+        }
+
+        if (d3dmetal_base == 0) {
+            return false;
+        }
+        out_d3dmetal_base = d3dmetal_base;
+
+        // 3. Scan executable sections of D3DMetal for: 48 8d 3d [disp32] (lea rdi, [rip + disp32])
+        // matching str_addr (target == instr + 7 + disp32)
+        const uint8_t* lea_instr = nullptr;
+        scan_ptr = d3dmetal_base;
+        while (scan_ptr < d3dmetal_base + 0x600000ULL && VirtualQuery((LPCVOID)scan_ptr, &mbi, sizeof(mbi)) != 0) {
+            if (mbi.State == MEM_COMMIT &&
+                (mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+                !(mbi.Protect & PAGE_GUARD))
+            {
+                const uint8_t* start = (const uint8_t*)mbi.BaseAddress;
+                const size_t size = mbi.RegionSize;
+                if (size >= 7) {
+                    const uint8_t* p_end = start + size - 7;
+                    for (const uint8_t* p = start; p <= p_end; ++p) {
+                        if (p[0] == 0x48 && p[1] == 0x8D && p[2] == 0x3D) {
+                            const int32_t disp = *(const int32_t*)(p + 3);
+                            const uintptr_t target = (uintptr_t)p + 7 + disp;
+                            if (target == str_addr) {
+                                lea_instr = p;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if (lea_instr != nullptr) {
+                break;
+            }
+            scan_ptr = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        }
+
+        if (lea_instr == nullptr) {
+            return false;
+        }
+
+        // 4. Resolve getenv and setenv via D3DMetal's stub/GOT
+        // Right after lea (at offset +7): e8 [disp32] (callq stub_getenv)
+        void* setenv_fn = nullptr;
+        if (lea_instr[7] == 0xE8) {
+            const int32_t call_disp = *(const int32_t*)(lea_instr + 8);
+            const uint8_t* stub = lea_instr + 7 + 5 + call_disp;
+            // Stub starts with: ff 25 [disp32] (jmpq *got_entry(%rip))
+            if (stub[0] == 0xFF && stub[1] == 0x25) {
+                const int32_t jmp_disp = *(const int32_t*)(stub + 2);
+                const uintptr_t got_getenv = (uintptr_t)stub + 6 + jmp_disp;
+                const void* getenv_ptr = *(const void**)got_getenv;
+
+                if (getenv_ptr != nullptr && (uintptr_t)getenv_ptr > 0x7ff000000000ULL) {
+                    // Try dlsym from GOT table (0x78 bytes before got_getenv in D3DMetal __got)
+                    const uintptr_t got_dlsym = got_getenv - 0x78;
+                    const void* dlsym_ptr = *(const void**)got_dlsym;
+                    if (dlsym_ptr != nullptr && (uintptr_t)dlsym_ptr > 0x7ff000000000ULL) {
+                        setenv_fn = call_sysv_dlsym((void*)dlsym_ptr, (void*)-2 /* RTLD_DEFAULT */, "setenv");
+                    }
+
+                    // Fallback: walk backward from getenv to libsystem_c Mach-O header
+                    if (setenv_fn == nullptr) {
+                        uintptr_t libsys_base = (uintptr_t)getenv_ptr & ~0xFFFULL;
+                        for (int i = 0; i < 4096 && libsys_base > 0x7ff000000000ULL; ++i) {
+                            if (*(const uint32_t*)libsys_base == 0xFEEDFACF) {
+                                break;
+                            }
+                            libsys_base -= 0x1000;
+                        }
+                        if (*(const uint32_t*)libsys_base == 0xFEEDFACF) {
+                            // On macOS x86_64, getenv is at 0xF08, setenv is at 0x536C (delta 0x4464)
+                            setenv_fn = (void*)(libsys_base + 0x536C);
+                        }
+                    }
+
+                    // Fallback: direct relative delta from getenv
+                    if (setenv_fn == nullptr) {
+                        setenv_fn = (void*)((uintptr_t)getenv_ptr + 0x4464);
+                    }
+                }
+            }
+        }
+
+        // 5. Invoke setenv("D3DM_MTL4", "0", 0) via SysV AMD64 ABI thunk
+        if (setenv_fn != nullptr) {
+            out_setenv_fn = (uintptr_t)setenv_fn;
+            out_setenv_res = call_sysv_setenv(setenv_fn, "D3DM_MTL4", "0", 0);
+        }
+
+        // 6. Scan forward up to 48 bytes from lea_instr for: 88 1d [disp32] (movb %bl, mtl4EV(%rip))
+        uint8_t* mtl4EV_addr = nullptr;
+        for (int i = 7; i < 48; ++i) {
+            const uint8_t* p = lea_instr + i;
+            if (p[0] == 0x88 && p[1] == 0x1D) {
+                const int32_t disp = *(const int32_t*)(p + 2);
+                mtl4EV_addr = (uint8_t*)(p + 6 + disp);
+                break;
+            }
+        }
+
+        if (mtl4EV_addr != nullptr) {
+            DWORD old_prot = 0;
+            if (VirtualProtect(mtl4EV_addr, 1, PAGE_READWRITE, &old_prot)) {
+                out_prior_val = *mtl4EV_addr;
+                *mtl4EV_addr = 0; // Force Metal 3 mode (false)
+                VirtualProtect(mtl4EV_addr, 1, old_prot, &old_prot);
+                out_mtl4_addr = (uintptr_t)mtl4EV_addr;
+            }
+        }
+
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void DarwinHost::enforce_metal3_mode() {
+    if (!is_darwin()) {
+        return;
+    }
+
+    static bool s_enforced = false;
+    if (s_enforced) {
+        return;
+    }
+
+    uintptr_t d3dmetal_base = 0;
+    uintptr_t setenv_fn = 0;
+    int setenv_res = -1;
+    uintptr_t mtl4_addr = 0;
+    uint8_t prior_val = 0;
+
+    const bool ok = enforce_metal3_mode_seh(d3dmetal_base, setenv_fn, setenv_res, mtl4_addr, prior_val);
+    if (ok) {
+        spdlog::info("DarwinHost: Enforced Metal 3 mode (D3DMetal base: {:p}, setenv: {:p} -> {}, mtl4EV: {:p}, prior: {})",
+            (void*)d3dmetal_base, (void*)setenv_fn, setenv_res, (void*)mtl4_addr, prior_val);
+        s_enforced = true;
+    } else {
+        spdlog::warn("DarwinHost: enforce_metal3_mode encountered exception or failed to locate D3DMetal structures");
+    }
+}
+
 } // namespace utility

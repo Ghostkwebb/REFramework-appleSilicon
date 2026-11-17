@@ -1432,13 +1432,25 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
         break;
     case WM_ACTIVATEAPP:
         m_is_app_active = (w_param != FALSE);
+        spdlog::info("REFramework: WM_ACTIVATEAPP -> is_app_active = {}", m_is_app_active.load());
         break;
-    case WM_SETFOCUS:
-        m_is_app_active = true;
+    case WM_ACTIVATE: {
+        const auto root_wnd = m_wnd != nullptr ? GetAncestor(m_wnd, GA_ROOT) : nullptr;
+        if (m_wnd != nullptr && (wnd == m_wnd || wnd == root_wnd)) {
+            m_is_app_active = (LOWORD(w_param) != WA_INACTIVE);
+            spdlog::info("REFramework: WM_ACTIVATE ({}) -> is_app_active = {}", LOWORD(w_param), m_is_app_active.load());
+        }
         break;
-    case WM_KILLFOCUS:
+    }
+    case WM_KILLFOCUS: {
         std::fill(std::begin(m_last_keys), std::end(m_last_keys), false);
+        const auto fg_wnd = GetForegroundWindow();
+        const auto root_wnd = m_wnd != nullptr ? GetAncestor(m_wnd, GA_ROOT) : nullptr;
+        if (m_wnd != nullptr && fg_wnd != m_wnd && fg_wnd != root_wnd) {
+            m_is_app_active = false;
+        }
         break;
+    }
     case WM_INPUT: {
         // RIM_INPUT means the window has focus
         if (GET_RAWINPUT_CODE_WPARAM(w_param) == RIM_INPUT) {
