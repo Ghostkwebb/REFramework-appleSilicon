@@ -1430,6 +1430,12 @@ bool REFramework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_pa
     case WM_SYSKEYUP:
         m_last_keys[w_param] = false;
         break;
+    case WM_ACTIVATEAPP:
+        m_is_app_active = (w_param != FALSE);
+        break;
+    case WM_SETFOCUS:
+        m_is_app_active = true;
+        break;
     case WM_KILLFOCUS:
         std::fill(std::begin(m_last_keys), std::end(m_last_keys), false);
         break;

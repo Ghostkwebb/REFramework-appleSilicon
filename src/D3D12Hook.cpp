@@ -66,6 +66,7 @@ void D3D12Hook::pace_command_queue(uint32_t max_frames_in_flight, uint32_t timeo
         if (fence_val > max_frames_in_flight) {
             const auto target_val = fence_val - max_frames_in_flight;
             if (m_flush_fence->GetCompletedValue() < target_val) {
+                ResetEvent(m_flush_event);
                 m_flush_fence->SetEventOnCompletion(target_val, m_flush_event);
                 WaitForSingleObject(m_flush_event, timeout_ms);
             }
@@ -1210,7 +1211,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     --g_present_depth;
 
-    if (utility::DarwinHost::is_darwin() && !is_test && SUCCEEDED(result)) {
+    if (utility::DarwinHost::is_darwin() && !is_test && SUCCEEDED(result) && g_framework != nullptr && !g_framework->is_app_active()) {
         d3d12->pace_command_queue(1);
     }
 

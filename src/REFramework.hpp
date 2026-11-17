@@ -70,6 +70,7 @@ public:
     bool is_ready() const { return m_initialized && m_game_data_initialized; }
     bool is_game_data_initialized() const { return m_game_data_initialized; }
     bool is_ui_focused() const { return m_is_ui_focused; }
+    bool is_app_active() const { return m_is_app_active.load(std::memory_order_relaxed); }
 
     void run_imgui_frame(bool from_present);
 
@@ -217,6 +218,7 @@ private:
     bool m_draw_ui{true};
     bool m_last_draw_ui{m_draw_ui};
     bool m_is_ui_focused{false};
+    std::atomic<bool> m_is_app_active{ true };
     bool m_cursor_state{false};
     bool m_cursor_state_changed{true};
     bool m_ui_option_transparent{true};
