@@ -158,7 +158,8 @@ protected:
     static inline void** s_swapchain_vtable{ nullptr };
     static inline void** s_command_queue_vtable{ nullptr };
     static inline std::unique_ptr<PointerHook> s_execute_command_lists_hook{};
-    static inline decltype(&D3D12Hook::execute_command_lists) s_original_execute_command_lists{ nullptr };
+    using ExecuteCommandListsFn = void (WINAPI*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+    static inline ExecuteCommandListsFn s_original_execute_command_lists{ nullptr };
     
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
