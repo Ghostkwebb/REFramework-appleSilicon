@@ -30,6 +30,7 @@ public:
     static bool is_host_darwin_pointer(uintptr_t addr);
     static void enforce_metal3_mode();
     static void verify_metal3_mode();
+    static bool get_vram_budget_caps(uint64_t& local_cap_bytes, uint64_t& shared_cap_bytes);
 
     // Keyboard & input helpers
     static uint32_t get_default_menu_key();

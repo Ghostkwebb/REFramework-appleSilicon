@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <spdlog/spdlog.h>
@@ -1003,6 +1005,48 @@ void DarwinHost::verify_metal3_mode() {
             spdlog::info("DarwinHost: D3DMetal mtl4EV verification skipped or symbol not present");
         }
     });
+}
+
+bool DarwinHost::get_vram_budget_caps(uint64_t& local_cap_bytes, uint64_t& shared_cap_bytes) {
+    if (!is_darwin()) {
+        return false;
+    }
+
+    char env_buf[32]{};
+    const DWORD env_len = GetEnvironmentVariableA("REFRAMEWORK_VRAM_BUDGET_MB", env_buf, sizeof(env_buf));
+    if (env_len > 0 && env_len < sizeof(env_buf)) {
+        if (_stricmp(env_buf, "0") == 0 || _stricmp(env_buf, "off") == 0 ||
+            _stricmp(env_buf, "false") == 0 || _stricmp(env_buf, "disable") == 0) {
+            static std::once_flag s_disabled_log_once;
+            std::call_once(s_disabled_log_once, []() {
+                spdlog::info("DarwinHost: DXGI VRAM budget cap disabled via REFRAMEWORK_VRAM_BUDGET_MB={}", "off");
+            });
+            return false;
+        }
+
+        char* end_ptr = nullptr;
+        unsigned long long mb = std::strtoull(env_buf, &end_ptr, 10);
+        if (end_ptr != env_buf && mb > 0) {
+            mb = (std::clamp<unsigned long long>)(mb, 2048ULL, 131072ULL);
+            local_cap_bytes = mb * 1024ULL * 1024ULL;
+            shared_cap_bytes = (std::min<uint64_t>)(2048ULL * 1024ULL * 1024ULL, local_cap_bytes / 2ULL);
+            return true;
+        }
+    }
+
+    MEMORYSTATUSEX mem{};
+    mem.dwLength = sizeof(mem);
+    if (!GlobalMemoryStatusEx(&mem) || mem.ullTotalPhys == 0) {
+        return false;
+    }
+
+    const uint64_t total_phys = mem.ullTotalPhys;
+    // Leave ~10.5 GiB headroom on Apple Silicon unified memory for macOS, Rosetta, Wine, and CPU heaps.
+    constexpr uint64_t kReserveBytes = 10752ULL * 1024ULL * 1024ULL;
+    constexpr uint64_t kMinLocalBytes = 3584ULL * 1024ULL * 1024ULL;
+    local_cap_bytes = (total_phys > kReserveBytes + kMinLocalBytes) ? (total_phys - kReserveBytes) : kMinLocalBytes;
+    shared_cap_bytes = (total_phys <= 20ULL * 1024ULL * 1024ULL * 1024ULL) ? (2048ULL * 1024ULL * 1024ULL) : (total_phys / 4ULL);
+    return true;
 }
 
 } // namespace utility

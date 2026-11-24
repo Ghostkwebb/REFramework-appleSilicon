@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <thread>
 #include <future>
 #include <unordered_set>
 #include <stacktrace>
 #include <wrl/client.h>
+#include <dxgi1_6.h>
 
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
@@ -83,6 +85,227 @@ void D3D12Hook::pace_command_queue(uint32_t max_frames_in_flight, uint32_t timeo
 
 void D3D12Hook::flush_command_queue(uint32_t timeout_ms) {
     pace_command_queue(0, timeout_ms);
+}
+
+namespace {
+uint64_t s_vram_local_cap = 0;
+uint64_t s_vram_shared_cap = 0;
+
+using AdapterGetDescFn = HRESULT(WINAPI*)(IDXGIAdapter*, DXGI_ADAPTER_DESC*);
+using AdapterGetDesc1Fn = HRESULT(WINAPI*)(IDXGIAdapter1*, DXGI_ADAPTER_DESC1*);
+using AdapterGetDesc2Fn = HRESULT(WINAPI*)(IDXGIAdapter2*, DXGI_ADAPTER_DESC2*);
+using AdapterQueryVideoMemoryInfoFn = HRESULT(WINAPI*)(IDXGIAdapter3*, UINT, DXGI_MEMORY_SEGMENT_GROUP, DXGI_QUERY_VIDEO_MEMORY_INFO*);
+using AdapterGetDesc3Fn = HRESULT(WINAPI*)(IDXGIAdapter4*, DXGI_ADAPTER_DESC3*);
+
+AdapterGetDescFn s_orig_adapter_get_desc = nullptr;
+AdapterGetDesc1Fn s_orig_adapter_get_desc1 = nullptr;
+AdapterGetDesc2Fn s_orig_adapter_get_desc2 = nullptr;
+AdapterQueryVideoMemoryInfoFn s_orig_adapter_query_video_memory_info = nullptr;
+AdapterGetDesc3Fn s_orig_adapter_get_desc3 = nullptr;
+
+std::unique_ptr<PointerHook> s_adapter_get_desc_hook{};
+std::unique_ptr<PointerHook> s_adapter_get_desc1_hook{};
+std::unique_ptr<PointerHook> s_adapter_get_desc2_hook{};
+std::unique_ptr<PointerHook> s_adapter_query_video_memory_info_hook{};
+std::unique_ptr<PointerHook> s_adapter_get_desc3_hook{};
+
+template <typename DescT>
+void clamp_adapter_desc(const char* api_name, DescT* desc) {
+    if (desc == nullptr) {
+        return;
+    }
+
+    const uint64_t orig_vram = desc->DedicatedVideoMemory;
+    const uint64_t orig_shared = desc->SharedSystemMemory;
+    const uint64_t cap_vram = (s_vram_local_cap > 0) ? (std::min<uint64_t>)(orig_vram, s_vram_local_cap) : orig_vram;
+    const uint64_t cap_shared = (s_vram_shared_cap > 0) ? (std::min<uint64_t>)(orig_shared, s_vram_shared_cap) : orig_shared;
+
+    desc->DedicatedVideoMemory = static_cast<SIZE_T>(cap_vram);
+    desc->SharedSystemMemory = static_cast<SIZE_T>(cap_shared);
+
+    static std::once_flag s_log_desc_once;
+    std::call_once(s_log_desc_once, [&]() {
+        spdlog::info(
+            "DarwinHost: Clamped DXGI {} VRAM {} MiB -> {} MiB, Shared {} MiB -> {} MiB",
+            api_name,
+            orig_vram / (1024ULL * 1024ULL),
+            cap_vram / (1024ULL * 1024ULL),
+            orig_shared / (1024ULL * 1024ULL),
+            cap_shared / (1024ULL * 1024ULL));
+    });
+}
+
+HRESULT WINAPI hooked_adapter_get_desc(IDXGIAdapter* adapter, DXGI_ADAPTER_DESC* desc) {
+    const auto hr = s_orig_adapter_get_desc(adapter, desc);
+    if (SUCCEEDED(hr)) {
+        clamp_adapter_desc("GetDesc", desc);
+    }
+    return hr;
+}
+
+HRESULT WINAPI hooked_adapter_get_desc1(IDXGIAdapter1* adapter, DXGI_ADAPTER_DESC1* desc) {
+    const auto hr = s_orig_adapter_get_desc1(adapter, desc);
+    if (SUCCEEDED(hr)) {
+        clamp_adapter_desc("GetDesc1", desc);
+    }
+    return hr;
+}
+
+HRESULT WINAPI hooked_adapter_get_desc2(IDXGIAdapter2* adapter, DXGI_ADAPTER_DESC2* desc) {
+    const auto hr = s_orig_adapter_get_desc2(adapter, desc);
+    if (SUCCEEDED(hr)) {
+        clamp_adapter_desc("GetDesc2", desc);
+    }
+    return hr;
+}
+
+HRESULT WINAPI hooked_adapter_query_video_memory_info(
+    IDXGIAdapter3* adapter,
+    UINT node_index,
+    DXGI_MEMORY_SEGMENT_GROUP segment_group,
+    DXGI_QUERY_VIDEO_MEMORY_INFO* info)
+{
+    const auto hr = s_orig_adapter_query_video_memory_info(adapter, node_index, segment_group, info);
+    if (SUCCEEDED(hr) && info != nullptr) {
+        const uint64_t orig_budget = info->Budget;
+        const uint64_t cap = (segment_group == DXGI_MEMORY_SEGMENT_GROUP_LOCAL) ? s_vram_local_cap : s_vram_shared_cap;
+        if (cap > 0) {
+            info->Budget = (std::min<UINT64>)(info->Budget, cap);
+            info->AvailableForReservation = (std::min<UINT64>)(info->AvailableForReservation, info->Budget / 2ULL);
+        }
+
+        if (segment_group == DXGI_MEMORY_SEGMENT_GROUP_LOCAL) {
+            static std::once_flag s_log_budget_once;
+            std::call_once(s_log_budget_once, [&]() {
+                spdlog::info(
+                    "DarwinHost: Clamped DXGI QueryVideoMemoryInfo LOCAL Budget {} MiB -> {} MiB (Usage {} MiB)",
+                    orig_budget / (1024ULL * 1024ULL),
+                    info->Budget / (1024ULL * 1024ULL),
+                    info->CurrentUsage / (1024ULL * 1024ULL));
+            });
+        }
+    }
+    return hr;
+}
+
+HRESULT WINAPI hooked_adapter_get_desc3(IDXGIAdapter4* adapter, DXGI_ADAPTER_DESC3* desc) {
+    const auto hr = s_orig_adapter_get_desc3(adapter, desc);
+    if (SUCCEEDED(hr)) {
+        clamp_adapter_desc("GetDesc3", desc);
+    }
+    return hr;
+}
+
+template <typename FnT>
+bool install_adapter_slot_hook(
+    void** vtable,
+    size_t slot,
+    FnT& orig_out,
+    std::unique_ptr<PointerHook>& hook_out,
+    FnT detour_fn,
+    const char* name)
+{
+    if (vtable == nullptr || IsBadReadPtr(&vtable[slot], sizeof(void*)) ||
+        vtable[slot] == nullptr || IsBadReadPtr(vtable[slot], sizeof(void*))) {
+        return false;
+    }
+
+    try {
+        orig_out = reinterpret_cast<FnT>(vtable[slot]);
+        hook_out = std::make_unique<PointerHook>(&vtable[slot], reinterpret_cast<void*>(detour_fn));
+        return true;
+    } catch (const std::exception& e) {
+        spdlog::warn("DarwinHost: Failed to hook IDXGIAdapter slot {} ({}): {}", slot, name, e.what());
+        orig_out = nullptr;
+        hook_out.reset();
+        return false;
+    }
+}
+} // namespace
+
+void D3D12Hook::install_dxgi_vram_budget_hooks() {
+    if (!utility::DarwinHost::is_darwin()) {
+        return;
+    }
+
+    static std::once_flag s_dxgi_vram_hook_once;
+    std::call_once(s_dxgi_vram_hook_once, []() {
+        uint64_t local_cap = 0;
+        uint64_t shared_cap = 0;
+        if (!utility::DarwinHost::get_vram_budget_caps(local_cap, shared_cap)) {
+            return;
+        }
+
+        auto dxgi_module = GetModuleHandleA("dxgi.dll");
+        if (dxgi_module == nullptr) {
+            dxgi_module = LoadLibraryA("dxgi.dll");
+        }
+        if (dxgi_module == nullptr) {
+            return;
+        }
+
+        auto create_dxgi_factory1 = reinterpret_cast<decltype(CreateDXGIFactory1)*>(GetProcAddress(dxgi_module, "CreateDXGIFactory1"));
+        if (create_dxgi_factory1 == nullptr) {
+            return;
+        }
+
+        Microsoft::WRL::ComPtr<IDXGIFactory1> factory1{};
+        if (FAILED(create_dxgi_factory1(IID_PPV_ARGS(&factory1))) || factory1 == nullptr) {
+            return;
+        }
+
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter1{};
+        if (FAILED(factory1->EnumAdapters1(0, &adapter1)) || adapter1 == nullptr) {
+            return;
+        }
+
+        Microsoft::WRL::ComPtr<IDXGIAdapter4> adapter4{};
+        Microsoft::WRL::ComPtr<IDXGIAdapter3> adapter3{};
+        void** vtable = nullptr;
+        size_t max_slots = 12;
+
+        if (SUCCEEDED(adapter1.As(&adapter4)) && adapter4 != nullptr) {
+            vtable = *(void***)adapter4.Get();
+            max_slots = 19;
+        } else if (SUCCEEDED(adapter1.As(&adapter3)) && adapter3 != nullptr) {
+            vtable = *(void***)adapter3.Get();
+            max_slots = 18;
+        } else {
+            vtable = *(void***)adapter1.Get();
+            max_slots = 11;
+        }
+
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * max_slots)) {
+            spdlog::warn("DarwinHost: Invalid IDXGIAdapter vtable for VRAM budget hooks");
+            return;
+        }
+
+        s_vram_local_cap = local_cap;
+        s_vram_shared_cap = shared_cap;
+
+        uint32_t hooked_count = 0;
+        if (install_adapter_slot_hook(vtable, 8, s_orig_adapter_get_desc, s_adapter_get_desc_hook, &hooked_adapter_get_desc, "GetDesc")) {
+            ++hooked_count;
+        }
+        if (install_adapter_slot_hook(vtable, 10, s_orig_adapter_get_desc1, s_adapter_get_desc1_hook, &hooked_adapter_get_desc1, "GetDesc1")) {
+            ++hooked_count;
+        }
+        if (max_slots > 11 && install_adapter_slot_hook(vtable, 11, s_orig_adapter_get_desc2, s_adapter_get_desc2_hook, &hooked_adapter_get_desc2, "GetDesc2")) {
+            ++hooked_count;
+        }
+        if (max_slots > 14 && install_adapter_slot_hook(vtable, 14, s_orig_adapter_query_video_memory_info, s_adapter_query_video_memory_info_hook, &hooked_adapter_query_video_memory_info, "QueryVideoMemoryInfo")) {
+            ++hooked_count;
+        }
+        if (max_slots > 18 && install_adapter_slot_hook(vtable, 18, s_orig_adapter_get_desc3, s_adapter_get_desc3_hook, &hooked_adapter_get_desc3, "GetDesc3")) {
+            ++hooked_count;
+        }
+
+        spdlog::info(
+            "DarwinHost: Installed DXGI VRAM budget caps ({} hooks; Local <= {} MiB, Shared <= {} MiB)",
+            hooked_count,
+            local_cap / (1024ULL * 1024ULL),
+            shared_cap / (1024ULL * 1024ULL));
+    });
 }
 
 static bool is_direct_command_queue_seh(ID3D12CommandQueue* queue) {
@@ -517,6 +740,8 @@ bool D3D12Hook::hook() {
         spdlog::error("Failed to load dxgi.dll");
         return false;
     }
+
+    D3D12Hook::install_dxgi_vram_budget_hooks();
 
     auto create_dxgi_factory2 = (decltype(CreateDXGIFactory2)*)GetProcAddress(dxgi_module, "CreateDXGIFactory2");
     auto create_dxgi_factory1 = (decltype(CreateDXGIFactory1)*)GetProcAddress(dxgi_module, "CreateDXGIFactory1");

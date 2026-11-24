@@ -537,6 +537,7 @@ REFramework::REFramework(HMODULE reframework_module)
         utility::load_module_from_current_directory(L"openvr_api.dll");
         utility::load_module_from_current_directory(L"openxr_loader.dll");
         LoadLibraryA("dxgi.dll");
+        D3D12Hook::install_dxgi_vram_budget_hooks();
         LoadLibraryA("d3d11.dll");
 
         if (!g_success_made_ldr_notification) {

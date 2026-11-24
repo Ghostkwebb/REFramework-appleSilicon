@@ -104,6 +104,7 @@ public:
     }
 
     static void hook_streamline(HMODULE dlssg_module = nullptr);
+    static void install_dxgi_vram_budget_hooks();
 
 protected:
     void hook_impl();
