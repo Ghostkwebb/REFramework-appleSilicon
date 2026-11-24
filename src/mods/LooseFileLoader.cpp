@@ -489,8 +489,9 @@ bool LooseFileLoader::can_loosely_load_file(const wchar_t* path) {
 }
 
 void LooseFileLoader::early_initialize() {
-    // LooseTextureLoader only supports MHWILDS.
-    if (sdk::GameIdentity::get().is_mhwilds()) {
+    // LooseTextureLoader supports TDB >= 81 (skip Pragmata).
+    const auto& gi = sdk::GameIdentity::get();
+    if (gi.tdb_ver() >= 81 && !gi.is_pragmata()) {
         hook();
         m_texture_loader.early_initialize();
     }

@@ -18,7 +18,11 @@
 #include "REFramework.hpp"
 #include "ExceptionHandler.hpp"
 
-static bool is_ud2_instruction(uintptr_t rip) {
+static uintptr_t s_game_base = 0;
+static uintptr_t s_game_end = 0;
+static std::atomic<uint64_t> s_ud2_recovered_count{ 0 };
+
+static bool __declspec(noinline) is_ud2_instruction(uintptr_t rip) {
     __try {
         if (rip != 0 && *(const uint16_t*)rip == 0x0B0F) { // 0x0F, 0x0B in little-endian (UD2)
             return true;
@@ -29,7 +33,7 @@ static bool is_ud2_instruction(uintptr_t rip) {
     return false;
 }
 
-static uintptr_t read_stack_pointer(uintptr_t rsp) {
+static uintptr_t __declspec(noinline) read_stack_pointer(uintptr_t rsp) {
     __try {
         if (rsp != 0) {
             return *(const uintptr_t*)rsp;
@@ -40,10 +44,50 @@ static uintptr_t read_stack_pointer(uintptr_t rsp) {
     return 0;
 }
 
+static bool __declspec(noinline) is_valid_call_return_site(uintptr_t retaddr, uintptr_t game_base, uintptr_t game_end) {
+    if (game_base == 0 || retaddr < game_base + 7 || retaddr >= game_end) {
+        return false;
+    }
+
+    __try {
+        const auto* p = reinterpret_cast<const uint8_t*>(retaddr);
+        // Relative CALL rel32
+        if (p[-5] == 0xE8) {
+            return true;
+        }
+        // Indirect CALL r/m64 (opcode 0xFF, ModRM reg == /2)
+        if (p[-2] == 0xFF && (p[-1] & 0x38) == 0x10) {
+            return true;
+        }
+        if ((p[-3] == 0xFF && (p[-2] & 0x38) == 0x10) ||
+            ((p[-3] & 0xF0) == 0x40 && p[-2] == 0xFF && (p[-1] & 0x38) == 0x10)) {
+            return true;
+        }
+        if (((p[-4] & 0xF0) == 0x40 && p[-3] == 0xFF && (p[-2] & 0x38) == 0x10) ||
+            (p[-4] == 0xFF && (p[-3] & 0x38) == 0x10)) {
+            return true;
+        }
+        if ((p[-5] & 0xF0) == 0x40 && p[-4] == 0xFF && (p[-3] & 0x38) == 0x10) {
+            return true;
+        }
+        if (p[-6] == 0xFF && (p[-5] & 0x38) == 0x10) {
+            return true;
+        }
+        if ((p[-7] & 0xF0) == 0x40 && p[-6] == 0xFF && (p[-5] & 0x38) == 0x10) {
+            return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return false;
+}
+
 // First-priority Vectored Exception Handler (VEH):
 // Runs at Step 1 before Wine ever attempts SEH stack unwinding (RtlVirtualUnwind2).
-// Catches uncompiled IL2CPP generic delegate stubs and stripped AOT stubs (UD2)
-// directly, preventing Wine stack limit faults (invalid frame outside stack limits).
+// Scoped strictly to uncompiled IL2CPP / stripped AOT stub calls inside the game executable
+// that push a valid CALL return address and immediately execute UD2.
+// Must remain lock-free (no spdlog/allocations inside VEH).
 LONG WINAPI reframework::vectored_exception_handler(struct _EXCEPTION_POINTERS* ei) {
     if (ei == nullptr || ei->ExceptionRecord == nullptr || ei->ContextRecord == nullptr) {
         return EXCEPTION_CONTINUE_SEARCH;
@@ -54,18 +98,12 @@ LONG WINAPI reframework::vectored_exception_handler(struct _EXCEPTION_POINTERS* 
         const auto rip = (uintptr_t)ei->ContextRecord->Rip;
         const auto rsp = (uintptr_t)ei->ContextRecord->Rsp;
 
-        if (is_ud2_instruction(rip)) {
+        if (s_game_base != 0 && rip >= s_game_base && rip < s_game_end && is_ud2_instruction(rip)) {
             const auto retaddr = read_stack_pointer(rsp);
-            // If caller pushed a valid return address within a loaded module, simulate a ret:
-            if (retaddr != 0 && utility::get_module_within(retaddr).has_value()) {
-                spdlog::warn("vectored_exception_handler: Dynamically recovered from uncompiled UD2 stub at 0x{:X}, returning to caller 0x{:X}", rip, retaddr);
+            if (is_valid_call_return_site(retaddr, s_game_base, s_game_end)) {
                 ei->ContextRecord->Rip = retaddr;
                 ei->ContextRecord->Rsp = rsp + sizeof(void*);
-                return EXCEPTION_CONTINUE_EXECUTION;
-            } else {
-                // Inline UD2 trap: advance instruction pointer past the 2-byte UD2 opcode
-                spdlog::warn("vectored_exception_handler: Dynamically skipped inline UD2 trap at 0x{:X}", rip);
-                ei->ContextRecord->Rip = rip + 2;
+                s_ud2_recovered_count.fetch_add(1, std::memory_order_relaxed);
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
         }
@@ -94,26 +132,6 @@ LONG WINAPI reframework::global_exception_handler(struct _EXCEPTION_POINTERS* ei
         code == 0x80000004)   // EXCEPTION_SINGLE_STEP
     {
         return EXCEPTION_CONTINUE_SEARCH;
-    }
-
-    // Dynamic AOT stub / UD2 recovery (fallback in case not caught at VEH level):
-    if (code == 0xC000001D && ei->ContextRecord != nullptr) { // STATUS_ILLEGAL_INSTRUCTION
-        const auto rip = (uintptr_t)ei->ContextRecord->Rip;
-        const auto rsp = (uintptr_t)ei->ContextRecord->Rsp;
-
-        if (is_ud2_instruction(rip)) {
-            const auto retaddr = read_stack_pointer(rsp);
-            if (retaddr != 0 && utility::get_module_within(retaddr).has_value()) {
-                spdlog::warn("global_exception_handler: Dynamically recovered from uncompiled UD2 stub at 0x{:X}, returning to caller 0x{:X}", rip, retaddr);
-                ei->ContextRecord->Rip = retaddr;
-                ei->ContextRecord->Rsp = rsp + sizeof(void*);
-                return EXCEPTION_CONTINUE_EXECUTION;
-            } else {
-                spdlog::warn("global_exception_handler: Dynamically skipped inline UD2 trap at 0x{:X}", rip);
-                ei->ContextRecord->Rip = rip + 2;
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-        }
     }
 
     static std::recursive_mutex mtx{};
@@ -339,9 +357,17 @@ void reframework::setup_exception_handler() {
             }
         });
 
-        // Register Vectored Exception Handler to intercept UD2 stubs before stack unwinding
-        AddVectoredExceptionHandler(1, vectored_exception_handler);
-        spdlog::info("Registered Vectored Exception Handler successfully");
+        const auto game = utility::get_executable();
+        if (game != nullptr) {
+            s_game_base = reinterpret_cast<uintptr_t>(game);
+            s_game_end = s_game_base + utility::get_module_size(game).value_or(0);
+        }
+
+        // Register Vectored Exception Handler on Wine to intercept UD2 stubs before stack unwinding
+        if (utility::DarwinHost::is_wine()) {
+            AddVectoredExceptionHandler(1, vectored_exception_handler);
+            spdlog::info("Registered Vectored Exception Handler (range 0x{:X}-0x{:X})", s_game_base, s_game_end);
+        }
 
         // Set our unhandled exception filter first and save any existing filter
         s_previous_filter = SetUnhandledExceptionFilter(global_exception_handler);

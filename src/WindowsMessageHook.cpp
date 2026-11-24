@@ -9,33 +9,41 @@
 
 using namespace std;
 
-static WindowsMessageHook* g_windows_message_hook{ nullptr };
+static std::atomic<WindowsMessageHook*> g_windows_message_hook{ nullptr };
 std::recursive_mutex g_proc_mutex{};
 
 LRESULT WINAPI window_proc(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
-    std::lock_guard _{ g_proc_mutex };
+    WNDPROC original_proc = nullptr;
+    WindowsMessageHook::OnMessageFn on_message_cb{};
 
-    if (g_windows_message_hook == nullptr) {
-        return DefWindowProc(wnd, message, w_param, l_param);
+    {
+        std::lock_guard _{ g_proc_mutex };
+        auto* hook = g_windows_message_hook.load(std::memory_order_acquire);
+        if (hook == nullptr) {
+            return DefWindowProc(wnd, message, w_param, l_param);
+        }
+
+        original_proc = hook->get_original(wnd);
+        if (original_proc == nullptr) {
+            original_proc = hook->get_original();
+        }
+
+        on_message_cb = hook->on_message;
+
+        if (message == WM_NCDESTROY) {
+            hook->unhook_window(wnd);
+        }
     }
 
-    auto original_proc = g_windows_message_hook->get_original(wnd);
-    if (original_proc == nullptr) {
-        original_proc = g_windows_message_hook->get_original();
-    }
-
-    // Call our onMessage callback.
-    auto& on_message = g_windows_message_hook->on_message;
-
-    if (on_message) {
+    if (on_message_cb) {
         // If it returns false we don't call the original window procedure.
-        if (!on_message(wnd, message, w_param, l_param)) {
+        if (!on_message_cb(wnd, message, w_param, l_param)) {
             return DefWindowProc(wnd, message, w_param, l_param);
         }
     }
 
-    if (original_proc != nullptr) {
-        // Call the original message procedure.
+    if (original_proc != nullptr && original_proc != &window_proc) {
+        // Call the original message procedure without holding g_proc_mutex to avoid deadlocks.
         return CallWindowProc(original_proc, wnd, message, w_param, l_param);
     }
 
@@ -47,6 +55,12 @@ bool WindowsMessageHook::hook_window(HWND wnd) {
         return false;
     }
 
+    DWORD pid = 0;
+    GetWindowThreadProcessId(wnd, &pid);
+    if (pid != GetCurrentProcessId()) {
+        return false;
+    }
+
     std::lock_guard _{ m_procs_mutex };
 
     if (m_original_procs.contains(wnd)) {
@@ -54,7 +68,7 @@ bool WindowsMessageHook::hook_window(HWND wnd) {
     }
 
     auto current_proc = (WNDPROC)GetWindowLongPtr(wnd, GWLP_WNDPROC);
-    if (current_proc == (WNDPROC)&window_proc) {
+    if (current_proc == nullptr || current_proc == (WNDPROC)&window_proc) {
         return true;
     }
 
@@ -62,6 +76,18 @@ bool WindowsMessageHook::hook_window(HWND wnd) {
     SetWindowLongPtr(wnd, GWLP_WNDPROC, (LONG_PTR)&window_proc);
     spdlog::info("WindowsMessageHook: Successfully hooked window {:x} (original: {:p})", (uintptr_t)wnd, (void*)current_proc);
     return true;
+}
+
+void WindowsMessageHook::unhook_window(HWND wnd) {
+    if (wnd == nullptr) {
+        return;
+    }
+
+    std::lock_guard _{ m_procs_mutex };
+    m_original_procs.erase(wnd);
+    if (wnd == m_wnd) {
+        m_wnd = nullptr;
+    }
 }
 
 WindowsMessageHook::WindowsMessageHook(HWND wnd)
@@ -73,7 +99,7 @@ WindowsMessageHook::WindowsMessageHook(HWND wnd)
 
     utility::ThreadSuspender suspender{};
 
-    g_windows_message_hook = this;
+    g_windows_message_hook.store(this, std::memory_order_release);
 
     // Save the original window procedure of primary window.
     if (m_wnd != nullptr) {
@@ -100,19 +126,9 @@ WindowsMessageHook::WindowsMessageHook(HWND wnd)
         }
     }
 
-    // Hook any other windows belonging to our process
     const auto current_pid = GetCurrentProcessId();
-    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
-        DWORD pid = 0;
-        GetWindowThreadProcessId(hwnd, &pid);
-        if (pid == (DWORD)lParam && g_windows_message_hook != nullptr) {
-            g_windows_message_hook->hook_window(hwnd);
-        }
-        return TRUE;
-    }, (LPARAM)current_pid);
-
     HWND foreground = GetForegroundWindow();
-    if (foreground != nullptr) {
+    if (foreground != nullptr && IsWindowVisible(foreground)) {
         DWORD fg_pid = 0;
         GetWindowThreadProcessId(foreground, &fg_pid);
         if (fg_pid == current_pid) {
@@ -130,7 +146,7 @@ WindowsMessageHook::~WindowsMessageHook() {
     utility::ThreadSuspender suspender{};
 
     remove();
-    g_windows_message_hook = nullptr;
+    g_windows_message_hook.store(nullptr, std::memory_order_release);
 }
 
 bool WindowsMessageHook::remove() {

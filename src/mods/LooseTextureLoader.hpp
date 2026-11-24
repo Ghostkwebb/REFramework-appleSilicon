@@ -6,8 +6,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "Mod.hpp"
@@ -126,4 +128,7 @@ private:
     // Lazy-cached values
     sdk::ResourceManager* m_cached_resource_manager{nullptr};
     std::map<ResourceType, void*> m_resource_re_type_cache{};
+
+    std::shared_mutex m_exists_cache_mutex{};
+    std::unordered_map<std::wstring, bool> m_exists_cache{};
 };

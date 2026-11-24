@@ -680,8 +680,9 @@ void FaultyFileDetector::on_draw_ui() {
 }
 
 void FaultyFileDetector::early_init() {
-    // FaultyFileDetector is only for MHWILDS.
-    if (!sdk::GameIdentity::get().is_mhwilds()) {
+    // Pre-TDB81 games don't have the scan patterns the detector looks for; skip Pragmata.
+    const auto& gi = sdk::GameIdentity::get();
+    if (gi.tdb_ver() < 81 || gi.is_pragmata()) {
         return;
     }
     if (g_faulty_detector_instance == nullptr) {

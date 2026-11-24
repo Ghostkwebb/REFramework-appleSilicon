@@ -6,6 +6,7 @@
 
 #include <utility/Module.hpp>
 #include <utility/Thread.hpp>
+#include <utility/DarwinHost.hpp>
 
 #include <sdk/GameIdentity.hpp>
 #include <safetyhook/allocator.hpp>
@@ -84,6 +85,7 @@ void startup_thread(HMODULE reframework_module) {
     // We will set it once here, then do it continuously
     // every now and then because it gets replaced
     reframework::setup_exception_handler();
+    utility::DarwinHost::initialize();
 
 #ifndef NDEBUG
     AllocConsole();

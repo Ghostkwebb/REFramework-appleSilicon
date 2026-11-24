@@ -9,6 +9,9 @@
 namespace utility {
 class DarwinHost {
 public:
+    // One-time macOS host setup (run early before D3D12 device creation)
+    static void initialize();
+
     // Wine & macOS (Darwin) host environment detection
     static bool is_wine();
     static bool is_darwin();
@@ -26,6 +29,7 @@ public:
     static bool is_valid_command_queue(ID3D12CommandQueue* queue);
     static bool is_host_darwin_pointer(uintptr_t addr);
     static void enforce_metal3_mode();
+    static void verify_metal3_mode();
 
     // Keyboard & input helpers
     static uint32_t get_default_menu_key();

@@ -155,7 +155,7 @@ void REFramework::hook_monitor() {
         if (m_initialized && m_wnd != 0 && now - m_last_message_time > std::chrono::seconds(5)) {
             if (m_windows_message_hook != nullptr) {
                 HWND fg = GetForegroundWindow();
-                if (fg != nullptr) {
+                if (fg != nullptr && IsWindowVisible(fg)) {
                     DWORD fg_pid = 0;
                     GetWindowThreadProcessId(fg, &fg_pid);
                     if (fg_pid == GetCurrentProcessId()) {
@@ -544,11 +544,8 @@ REFramework::REFramework(HMODULE reframework_module)
         }
     }
 
-    if (gi.is_mhwilds()) {
+    if (gi.tdb_ver() >= 81 && !gi.is_pragmata()) {
         LooseTextureLoader::get().early_initialize();
-    }
-
-    if (gi.is_mhwilds()) {
         FaultyFileDetector::early_init();
     }
 
@@ -643,7 +640,7 @@ REFramework::REFramework(HMODULE reframework_module)
         auto& loader = LooseFileLoader::get(); // Initialize this really early
         auto &integrity_bypass = IntegrityCheckBypass::get_shared_instance();
 
-        const bool has_faulty_file_detector = gi.is_mhwilds();
+        const bool has_faulty_file_detector = gi.tdb_ver() >= 81 && !gi.is_pragmata();
         if (has_faulty_file_detector) {
             FaultyFileDetector::get(); // Initialize early
         }
@@ -768,9 +765,22 @@ void REFramework::initialize_hook() {
     // else, defer to the hook monitor if anything in the chain failed
     if (m_valid_render_frame) {
         if (utility::DarwinHost::is_darwin()) {
-            // Under Wine / CrossOver on macOS, wait briefly for the game's initial window surface
-            // to finish presenting Frame 1, avoiding cross-thread mutex contention with winemac.drv
-            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            // Wait up to 250ms for Frame 1 presentation to complete before attaching D3D12 hooks
+            // to avoid cross-thread contention with winemac.drv during initial surface setup.
+            bool frame_advanced = false;
+            if (auto* renderer = sdk::renderer::get_renderer(); renderer != nullptr) {
+                for (int i = 0; i < 25; ++i) {
+                    const auto rf = renderer->get_render_frame();
+                    if (rf.has_value() && *rf >= 2) {
+                        frame_advanced = true;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+            if (!frame_advanced) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
         }
 
         // We can guaranteed hook at this point with g_framework already assigned
@@ -941,28 +951,13 @@ void REFramework::run_imgui_frame(bool from_present) {
     const bool should_update_input = !utility::DarwinHost::is_darwin() || m_draw_ui;
     ImGui_ImplWin32_NewFrame(should_update_input);
 
-    // On macOS / Wine / CrossOver, standard window messages (WM_MOUSEMOVE, WM_LBUTTONDOWN)
-    // are frequently routed directly to DirectInput/RawInput or Cocoa and bypass window_proc.
-    // Query physical cursor position and button states so ImGui always receives mouse interactions.
-    if (m_draw_ui) {
-        POINT pt{};
-        if (::GetCursorPos(&pt)) {
-            HWND target_wnd = m_wnd;
-            if (target_wnd == nullptr || !::IsWindow(target_wnd)) {
-                target_wnd = ::GetForegroundWindow();
-            }
-            if (target_wnd != nullptr && ::ScreenToClient(target_wnd, &pt)) {
-                auto& io = ImGui::GetIO();
-                io.AddMousePosEvent(static_cast<float>(pt.x), static_cast<float>(pt.y));
-            }
-        }
+    // On macOS / Wine / CrossOver, RawInput/DirectInput often steals mouse button events before WndProc.
+    // Poll physical button states only when the menu is open and the game window is focused.
+    if (utility::DarwinHost::is_darwin() && m_draw_ui && is_app_active()) {
         auto& io = ImGui::GetIO();
-        const bool lbutton_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-        const bool rbutton_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-        const bool mbutton_down = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
-        io.AddMouseButtonEvent(0, lbutton_down);
-        io.AddMouseButtonEvent(1, rbutton_down);
-        io.AddMouseButtonEvent(2, mbutton_down);
+        io.AddMouseButtonEvent(0, (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
+        io.AddMouseButtonEvent(1, (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0);
+        io.AddMouseButtonEvent(2, (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
     }
 
     // from_present is so we don't accidentally

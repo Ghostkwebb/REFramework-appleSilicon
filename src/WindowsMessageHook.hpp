@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <unordered_map>
 #include <mutex>
@@ -12,7 +13,8 @@
 // messages sent to the window.
 class WindowsMessageHook {
 public:
-    std::function<bool(HWND, UINT, WPARAM, LPARAM)> on_message;
+    using OnMessageFn = std::function<bool(HWND, UINT, WPARAM, LPARAM)>;
+    OnMessageFn on_message;
 
     WindowsMessageHook() = delete;
     WindowsMessageHook(const WindowsMessageHook& other) = delete;
@@ -25,6 +27,7 @@ public:
     bool remove();
 
     bool hook_window(HWND wnd);
+    void unhook_window(HWND wnd);
 
     auto is_valid() const {
         return m_original_proc != nullptr || !m_original_procs.empty();

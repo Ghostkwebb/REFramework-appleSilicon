@@ -25,6 +25,7 @@ thread_local bool g_inside_d3d12_hook = false;
 
 D3D12Hook::~D3D12Hook() {
     unhook();
+    std::scoped_lock lock{ m_flush_mutex };
     if (m_flush_event != nullptr) {
         CloseHandle(m_flush_event);
         m_flush_event = nullptr;
@@ -34,7 +35,13 @@ D3D12Hook::~D3D12Hook() {
 }
 
 void D3D12Hook::pace_command_queue(uint32_t max_frames_in_flight, uint32_t timeout_ms) {
+    std::scoped_lock lock{ m_flush_mutex };
+
     if (m_command_queue == nullptr || m_device == nullptr) {
+        return;
+    }
+
+    if (m_fallback_command_queue != nullptr && m_command_queue == m_fallback_command_queue.Get()) {
         return;
     }
 
@@ -233,12 +240,16 @@ void* D3D12Hook::Streamline::link_swapchain_to_cmd_queue(void* rcx, void* rdx, v
     auto& hook = D3D12Hook::s_streamline.link_swapchain_to_cmd_queue_hook;
     const auto result = hook->get_original<decltype(link_swapchain_to_cmd_queue)>()(rcx, rdx, r8, r9);
 
-    if (s_captured_command_queue == nullptr) {
+    if (s_captured_command_queue_raw.load(std::memory_order_acquire) == nullptr) {
         for (void* arg : {rcx, rdx, r8, r9}) {
             if (arg != nullptr && is_direct_command_queue_seh((ID3D12CommandQueue*)arg)) {
                 auto q = (ID3D12CommandQueue*)arg;
-                spdlog::info("[Streamline] Captured direct game command queue from linkSwapchainToCmdQueue: {:x}", (uintptr_t)q);
-                s_captured_command_queue = q;
+                std::scoped_lock lock{ s_capture_mutex };
+                if (s_captured_command_queue == nullptr) {
+                    s_captured_command_queue = q;
+                    s_captured_command_queue_raw.store(q, std::memory_order_release);
+                    spdlog::info("[Streamline] Captured direct game command queue from linkSwapchainToCmdQueue: {:x}", (uintptr_t)q);
+                }
                 break;
             }
         }
@@ -267,11 +278,10 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
     if (device != nullptr) {
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue{};
         if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&queue))) && queue != nullptr) {
-            spdlog::info("D3D12Hook: Captured real game command queue from create_swapchain: {:x}", (uintptr_t)queue.Get());
+            std::scoped_lock lock{ s_capture_mutex };
             s_captured_command_queue = queue;
-            if (utility::DarwinHost::is_darwin() && s_execute_command_lists_hook != nullptr) {
-                s_execute_command_lists_hook.reset();
-            }
+            s_captured_command_queue_raw.store(queue.Get(), std::memory_order_release);
+            spdlog::info("D3D12Hook: Captured real game command queue from create_swapchain: {:x}", (uintptr_t)queue.Get());
         }
     }
 
@@ -318,14 +328,18 @@ HRESULT WINAPI D3D12Hook::create_swapchain(IDXGIFactory4* factory, IUnknown* dev
 }
 
 void WINAPI D3D12Hook::execute_command_lists(ID3D12CommandQueue* queue, UINT num_command_lists, ID3D12CommandList* const* command_lists) {
-    if (s_captured_command_queue == nullptr && is_direct_command_queue_seh(queue)) {
-        s_captured_command_queue = queue;
-        spdlog::info("D3D12Hook: Captured direct game command queue via ExecuteCommandLists: {:x}", (uintptr_t)queue);
-        if (utility::DarwinHost::is_darwin() && s_execute_command_lists_hook != nullptr) {
-            s_execute_command_lists_hook.reset();
-            queue->ExecuteCommandLists(num_command_lists, command_lists);
-            return;
+    if (s_captured_command_queue_raw.load(std::memory_order_acquire) == nullptr && is_direct_command_queue_seh(queue)) {
+        std::scoped_lock lock{ s_capture_mutex };
+        if (s_captured_command_queue == nullptr) {
+            s_captured_command_queue = queue;
+            s_captured_command_queue_raw.store(queue, std::memory_order_release);
+            spdlog::info("D3D12Hook: Captured direct game command queue via ExecuteCommandLists: {:x}", (uintptr_t)queue);
         }
+    }
+
+    if (s_original_execute_command_lists != nullptr) {
+        s_original_execute_command_lists(queue, num_command_lists, command_lists);
+        return;
     }
 
     auto hook = s_execute_command_lists_hook.get();
@@ -455,13 +469,14 @@ bool D3D12Hook::hook() {
     spdlog::info("Creating dummy device");
 
     if (utility::DarwinHost::is_darwin()) {
+        utility::DarwinHost::enforce_metal3_mode();
         spdlog::info("macOS / D3DMetal environment detected, creating dummy device with enumerated adapter");
         if (FAILED(utility::DarwinHost::create_d3d12_dummy_device(d3d12_create_device, feature_level, &device))) {
             spdlog::error("Failed to create D3D12 dummy device under D3DMetal");
             return false;
         }
 
-        utility::DarwinHost::enforce_metal3_mode();
+        utility::DarwinHost::verify_metal3_mode();
     } else {
         // Get the original on-disk bytes of the D3D12CreateDevice export
         const auto original_bytes = utility::get_original_bytes(d3d12_create_device);
@@ -919,10 +934,11 @@ void D3D12Hook::hook_impl() {
     m_present_hook = std::make_unique<PointerHook>(&present_fn, &D3D12Hook::present);
 
     if (s_execute_command_lists_hook == nullptr && s_command_queue_vtable != nullptr) {
-        if (!utility::DarwinHost::is_darwin() || s_captured_command_queue == nullptr) {
+        if (!utility::DarwinHost::is_darwin() || s_captured_command_queue_raw.load(std::memory_order_acquire) == nullptr) {
             try {
                 if (!IsBadReadPtr(&s_command_queue_vtable[10], sizeof(void*)) && s_command_queue_vtable[10] != nullptr) {
                     auto& exec_fn = s_command_queue_vtable[10];
+                    s_original_execute_command_lists = reinterpret_cast<decltype(D3D12Hook::execute_command_lists)*>(exec_fn);
                     s_execute_command_lists_hook = std::make_unique<PointerHook>(&exec_fn, &D3D12Hook::execute_command_lists);
                     spdlog::info("D3D12Hook: Hooked ID3D12CommandQueue::ExecuteCommandLists");
                 }
@@ -1003,7 +1019,7 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
         return S_OK;
     }
 
-    std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
+    std::unique_lock<std::recursive_mutex> monitor_lock{g_framework->get_hook_monitor_mutex()};
 
     auto d3d12 = g_d3d12_hook;
 
@@ -1070,8 +1086,8 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
     }
 
     // Prefer real game command queue captured from ExecuteCommandLists or create_swapchain
-    if (s_captured_command_queue != nullptr) {
-        d3d12->m_command_queue = s_captured_command_queue.Get();
+    if (auto* captured = s_captured_command_queue_raw.load(std::memory_order_acquire); captured != nullptr) {
+        d3d12->m_command_queue = captured;
     } else if (d3d12->s_command_queue_offset >= sizeof(void*) && (d3d12->s_command_queue_offset % sizeof(void*) == 0)) {
         if (d3d12->m_using_proton_swapchain) {
             const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->s_proton_swapchain_offset);
@@ -1102,7 +1118,11 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
             if (candidate != nullptr && is_direct_command_queue_seh(candidate)) {
                 spdlog::info("D3D12Hook: Dynamically resolved direct command queue in swapchain at offset 0x{:X}: {:x}", off, (uintptr_t)candidate);
                 d3d12->m_command_queue = candidate;
-                s_captured_command_queue = candidate;
+                {
+                    std::scoped_lock lock{ s_capture_mutex };
+                    s_captured_command_queue = candidate;
+                    s_captured_command_queue_raw.store(candidate, std::memory_order_release);
+                }
                 d3d12->s_command_queue_offset = off;
                 break;
             }
@@ -1213,16 +1233,17 @@ HRESULT WINAPI D3D12Hook::present(IDXGISwapChain3* swap_chain, uint64_t sync_int
 
     --g_present_depth;
 
-    if (utility::DarwinHost::is_darwin() && !is_test && SUCCEEDED(result) && g_framework != nullptr && !g_framework->is_app_active()) {
-        d3d12->pace_command_queue(1);
-    }
-
     if (!is_test && result == S_OK && d3d12->m_on_post_present) {
         d3d12->m_on_post_present(*d3d12);
     }
 
     d3d12->m_inside_present = false;
-    
+    monitor_lock.unlock();
+
+    if (utility::DarwinHost::is_darwin() && !is_test && SUCCEEDED(result) && g_framework != nullptr && !g_framework->is_app_active()) {
+        d3d12->pace_command_queue(1);
+    }
+
     return result;
 }
 
@@ -1245,7 +1266,7 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
         return S_OK;
     }
 
-    std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
+    std::unique_lock<std::recursive_mutex> monitor_lock{g_framework->get_hook_monitor_mutex()};
 
     spdlog::info("D3D12 resize buffers called");
     spdlog::info(" Parameters: buffer_count {} width {} height {} new_format {} swap_chain_flags {}", buffer_count, width, height, new_format, swap_chain_flags);
@@ -1319,7 +1340,11 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
         }
     }
 
-    d3d12->flush_command_queue(2000);
+    if (utility::DarwinHost::is_darwin()) {
+        monitor_lock.unlock();
+        d3d12->flush_command_queue(2000);
+        monitor_lock.lock();
+    }
 
     if (d3d12->m_on_resize_buffers) {
         d3d12->m_on_resize_buffers(*d3d12);

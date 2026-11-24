@@ -62,7 +62,7 @@ void LooseTextureLoader::on_draw_ui() {
 #if !ENABLE_LOOSE_TEXTURE_LOADER
     return;
 #else
-    if (!sdk::GameIdentity::get().is_mhwilds()) {
+    if (sdk::GameIdentity::get().tdb_ver() < 81 || sdk::GameIdentity::get().is_pragmata()) {
         return;
     }
 
@@ -120,8 +120,9 @@ void LooseTextureLoader::on_draw_ui() {
 
 void LooseTextureLoader::early_initialize() {
 #if ENABLE_LOOSE_TEXTURE_LOADER
-    // Only MHWILDS has the DStorage-based loose texture path.
-    if (!sdk::GameIdentity::get().is_mhwilds()) {
+    // TDB>=81 games have the DStorage-based loose texture path (skip Pragmata).
+    const auto& gi = sdk::GameIdentity::get();
+    if (gi.tdb_ver() < 81 || gi.is_pragmata()) {
         return;
     }
     hook_dstorage_path_checks();
@@ -597,19 +598,61 @@ std::optional<uintptr_t> LooseTextureLoader::find_direct_storage_file_open_funct
     return func_start;
 }
 
+static size_t __declspec(noinline) safe_wcsnlen_seh(const wchar_t* str, size_t max_len) {
+    if (str == nullptr) {
+        return 0;
+    }
+    __try {
+        return wcsnlen(str, max_len);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+
 void LooseTextureLoader::handle_path_check_to_open_dstorage_file(safetyhook::Context& context) {
     if (!m_enabled->value()) return;
 
-    wchar_t *target_path = (wchar_t*)context.rcx;
-    wchar_t *search_str = (wchar_t*)context.rdx;
-    
-    // Only bypass if the path contains .tex extension AND the loose file actually exists on disk
-    if (target_path && search_str && !IsBadStringPtrW(target_path, 1024) && wcsstr(target_path, TEX_FILE_EXTENSION) != nullptr) {
-        std::error_code ec{};
-        if (std::filesystem::exists(target_path, ec)) {
-            //spdlog::info("[LooseTextureLoader]: Detected loose .tex file, patching to bypass it! Path: {}", utility::narrow(target_path));
-            context.rdx = (uint64_t)TEX_FILE_EXTENSION;
+    wchar_t* target_path = (wchar_t*)context.rcx;
+    wchar_t* search_str = (wchar_t*)context.rdx;
+
+    if (target_path == nullptr || search_str == nullptr) {
+        return;
+    }
+
+    const size_t path_len = safe_wcsnlen_seh(target_path, 1024);
+    if (path_len == 0 || path_len >= 1024) {
+        return;
+    }
+
+    if (wcsstr(target_path, TEX_FILE_EXTENSION) == nullptr) {
+        return;
+    }
+
+    std::wstring key{ target_path, path_len };
+    bool file_exists = false;
+    bool cache_hit = false;
+
+    {
+        std::shared_lock lock{ m_exists_cache_mutex };
+        if (const auto it = m_exists_cache.find(key); it != m_exists_cache.end()) {
+            file_exists = it->second;
+            cache_hit = true;
         }
+    }
+
+    if (!cache_hit) {
+        std::error_code ec{};
+        file_exists = std::filesystem::exists(key, ec);
+
+        std::unique_lock lock{ m_exists_cache_mutex };
+        if (m_exists_cache.size() >= 16384) {
+            m_exists_cache.clear();
+        }
+        m_exists_cache.emplace(std::move(key), file_exists);
+    }
+
+    if (file_exists) {
+        context.rdx = (uint64_t)TEX_FILE_EXTENSION;
     }
 }
 

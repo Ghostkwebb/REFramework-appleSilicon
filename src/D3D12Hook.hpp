@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <iostream>
 #include <functional>
+#include <mutex>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi")
@@ -113,6 +115,9 @@ protected:
     ID3D12CommandQueue* m_command_queue{ nullptr };
     Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_fallback_command_queue{};
     static inline Microsoft::WRL::ComPtr<ID3D12CommandQueue> s_captured_command_queue{};
+    static inline std::atomic<ID3D12CommandQueue*> s_captured_command_queue_raw{ nullptr };
+    static inline std::mutex s_capture_mutex{};
+    std::mutex m_flush_mutex{};
     Microsoft::WRL::ComPtr<ID3D12Fence> m_flush_fence{};
     HANDLE m_flush_event{ nullptr };
     UINT64 m_flush_fence_val{ 0 };
@@ -153,6 +158,7 @@ protected:
     static inline void** s_swapchain_vtable{ nullptr };
     static inline void** s_command_queue_vtable{ nullptr };
     static inline std::unique_ptr<PointerHook> s_execute_command_lists_hook{};
+    static inline decltype(&D3D12Hook::execute_command_lists) s_original_execute_command_lists{ nullptr };
     
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
