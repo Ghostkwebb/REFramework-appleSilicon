@@ -684,6 +684,12 @@ bool __declspec(noinline) verify_d3dmetal_seh(
         return false;
     }
 }
+
+bool should_force_metal3() {
+    char buf[16]{};
+    const DWORD len = GetEnvironmentVariableA("REFRAMEWORK_FORCE_METAL3", buf, sizeof(buf));
+    return len > 0 && len < sizeof(buf) && (buf[0] == '1' || buf[0] == 'y' || buf[0] == 'Y' || buf[0] == 't' || buf[0] == 'T');
+}
 } // namespace
 
 void DarwinHost::initialize() {
@@ -924,7 +930,7 @@ bool DarwinHost::is_mac_command_key(uint32_t vk_code) {
 }
 
 void DarwinHost::enforce_metal3_mode() {
-    if (!is_darwin()) {
+    if (!is_darwin() || !should_force_metal3()) {
         return;
     }
 
@@ -963,6 +969,14 @@ void DarwinHost::enforce_metal3_mode() {
 
 void DarwinHost::verify_metal3_mode() {
     if (!is_darwin()) {
+        return;
+    }
+
+    if (!should_force_metal3()) {
+        static std::once_flag s_preserve_once;
+        std::call_once(s_preserve_once, []() {
+            spdlog::info("DarwinHost: Preserving native D3DMetal mode (set REFRAMEWORK_FORCE_METAL3=1 to force Metal 3)");
+        });
         return;
     }
 

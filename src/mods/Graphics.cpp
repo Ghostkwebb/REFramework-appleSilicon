@@ -228,6 +228,7 @@ void Graphics::on_config_load(const utility::Config& cfg) {
     for (IModValue& option : m_options) {
         option.config_load(cfg);
     }
+    m_last_applied_display_type = std::nullopt;
 }
 
 void Graphics::on_config_save(utility::Config& cfg) {
@@ -427,6 +428,10 @@ void Graphics::on_draw_ui() {
             ImGui::TreePop();
         }
     }
+}
+
+void Graphics::on_device_reset() {
+    m_last_applied_display_type = std::nullopt;
 }
 
 void Graphics::on_present() {
@@ -804,6 +809,7 @@ void Graphics::do_ultrawide_fix() {
     }
 
     static auto via_scene_view = sdk::find_type_definition("via.SceneView");
+    static auto get_display_type_method = via_scene_view != nullptr ? via_scene_view->get_method("get_DisplayType") : nullptr;
     static auto set_display_type_method = via_scene_view != nullptr ? via_scene_view->get_method("set_DisplayType") : nullptr;
 
     auto main_view = sdk::get_main_view();
@@ -855,7 +861,13 @@ void Graphics::do_ultrawide_fix() {
             }
         }
 
-        if ((uintptr_t)main_view != m_last_applied_view || !m_last_applied_display_type.has_value() || *m_last_applied_display_type != (int32_t)display_type) {
+        const bool cache_mismatch = (uintptr_t)main_view != m_last_applied_view ||
+                                    !m_last_applied_display_type.has_value() ||
+                                    *m_last_applied_display_type != (int32_t)display_type;
+        const bool view_mismatch = get_display_type_method != nullptr &&
+                                   get_display_type_method->call<int32_t>(sdk::get_thread_context(), main_view) != (int32_t)display_type;
+
+        if (cache_mismatch || view_mismatch) {
             set_display_type_method->call(sdk::get_thread_context(), main_view, display_type);
             m_last_applied_view = (uintptr_t)main_view;
             m_last_applied_display_type = (int32_t)display_type;
